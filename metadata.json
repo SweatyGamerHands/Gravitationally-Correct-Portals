@@ -1,0 +1,6 @@
+{
+  "name": "Spacetime Portal Sandbox",
+  "description": "A robust physical simulation exploring gravitationally correct portals, spacetime curvature visualization, and momentum conservation in a vacuum.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
