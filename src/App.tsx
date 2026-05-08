@@ -433,6 +433,7 @@ export default function App() {
   }>({ id: null, type: null });
 
   const lastPos = useRef({ x: 0, y: 0 });
+  const activeTouchId = useRef<number | null>(null);
   const frameCount = useRef(0);
   const lastTime = useRef(performance.now());
   const prevTime = useRef(performance.now());
@@ -833,8 +834,37 @@ export default function App() {
     const isTouch = 'targetTouches' in e;
     if (isTouch) {
       if (e.cancelable) e.preventDefault();
+      const touchEvent = e as React.TouchEvent;
+      const touch = touchEvent.targetTouches[0];
+      if (!touch) return;
+      activeTouchId.current = touch.identifier;
+      const rect = canvasRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const p = { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+      lastPos.current = p;
+
+      for (const pt of portals) {
+        if (Math.hypot(pt.handle.x - p.x, pt.handle.y - p.y) < 30) {
+          setDragState({ id: pt.id, type: 'handle' });
+          return;
+        }
+      }
+      for (const pt of portals) {
+        if (Math.hypot(pt.x - p.x, pt.y - p.y) < 50) {
+          setDragState({ id: pt.id, type: 'portal' });
+          return;
+        }
+      }
+      for (let i = objects.length - 1; i >= 0; i--) {
+        const obj = objects[i];
+        if (Math.hypot(obj.x - p.x, obj.y - p.y) < obj.radius + 20) {
+          setDragState({ id: String(i), type: 'ball' });
+          return;
+        }
+      }
+      return;
     }
-    const touch = isTouch ? e.targetTouches[0] : (e as React.MouseEvent);
+    const touch = e as React.MouseEvent;
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     const p = { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
@@ -864,10 +894,18 @@ export default function App() {
   const handleMove = (e: React.MouseEvent | React.TouchEvent) => {
     if (!dragState.type) return;
     const isTouch = 'targetTouches' in e;
+    let touch: React.MouseEvent | Touch;
     if (isTouch) {
       if (e.cancelable) e.preventDefault();
+      const touchEvent = e as React.TouchEvent;
+      const trackedTouch = Array.from(touchEvent.targetTouches).find(
+        t => t.identifier === activeTouchId.current
+      );
+      if (!trackedTouch) return;
+      touch = trackedTouch;
+    } else {
+      touch = e as React.MouseEvent;
     }
-    const touch = isTouch ? e.targetTouches[0] : (e as React.MouseEvent);
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     const p = { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
@@ -893,7 +931,23 @@ export default function App() {
     lastPos.current = p;
   };
 
-  const handleEnd = () => setDragState({ id: null, type: null });
+  const handleEnd = (e?: React.TouchEvent | React.MouseEvent) => {
+    if (e && 'changedTouches' in e) {
+      const touchEvent = e as React.TouchEvent;
+      const endedActiveTouch = Array.from(touchEvent.changedTouches).some(
+        t => t.identifier === activeTouchId.current
+      );
+      if (!endedActiveTouch) return;
+      activeTouchId.current = null;
+    }
+
+    if (!e || !('changedTouches' in e)) {
+      activeTouchId.current = null;
+    }
+
+    lastPos.current = { x: 0, y: 0 };
+    setDragState({ id: null, type: null });
+  };
 
   const addBall = () => {
     const w = canvasRef.current?.width || 800;
@@ -1160,6 +1214,7 @@ export default function App() {
             onTouchStart={handleStart}
             onTouchMove={handleMove}
             onTouchEnd={handleEnd}
+            onTouchCancel={handleEnd}
             className="w-full h-full cursor-crosshair block touch-none"
           />
           
