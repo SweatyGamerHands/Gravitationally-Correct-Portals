@@ -1037,8 +1037,8 @@ export default function App() {
               </div>
               <div className="space-y-1">
                 <div className="flex justify-between text-[8px] uppercase font-bold text-white/30">
-                  <span className="flex items-center">G-Constant <HelpTooltip text="The global downward gravitational weight applied to all entities." /></span>
-                  <span>{config.gravity.toFixed(1)}</span>
+                  <span className="flex items-center">Physical Gravity <HelpTooltip text="The single global downward acceleration multiplier applied to all sandbox entities." /></span>
+                  <span>{config.gravity.toFixed(1)}x</span>
                 </div>
                 <input 
                   type="range" min="0" max="5" step="0.1"
@@ -1104,7 +1104,7 @@ export default function App() {
 
             <div className="space-y-2">
               <div className="flex justify-between text-[10px] uppercase font-bold text-white/50">
-                <span className="flex items-center">Grav Pull <HelpTooltip text="Transmission coefficient of the portal bridge. Determines how much of the ambient gravitational field from the linked side leaks through to this aperture." /></span>
+                <span className="flex items-center">Portal Gravity Leakage <HelpTooltip text="Portal-specific transmission coefficient. Determines how much of the linked side's ambient gravitational field leaks through this aperture." /></span>
                 <span className="text-[#ff9d00]">{config.portalPull.toFixed(1)}x</span>
               </div>
               <input 
@@ -1186,7 +1186,7 @@ export default function App() {
                 >
                   <Zap size={16} className="md:w-[18px] md:h-[18px]" />
                 </button>
-                <HelpTooltip text="Enables gravitational frame-transfer. Gravity from the linked portal's side is transmitted and reoriented through the aperture." />
+                <HelpTooltip text="Toggles portal frame-transfer: linked-side gravity is transmitted and reoriented through apertures. This does not change the global gravity strength." />
               </div>
 
               <div className="relative">
@@ -1196,21 +1196,10 @@ export default function App() {
                 >
                   <Wind size={16} className="md:w-[18px] md:h-[18px]" />
                 </button>
-                <HelpTooltip text="Disables all air damping for infinite momentum loops." />
+                <HelpTooltip text="Vacuum disables air damping for infinite momentum loops. Baseline gravity strength stays controlled by the Physical Gravity slider." />
               </div>
             </div>
 
-            <div className="flex flex-col gap-1 w-16 md:w-24">
-              <span className="text-[7px] md:text-[8px] uppercase font-bold tracking-widest text-white/40 flex items-center">
-                Gravity <HelpTooltip text="The global downward acceleration applied to all sandbox entities." />
-              </span>
-              <input 
-                type="range" min="0" max="2" step="0.1" 
-                value={config.gravity} 
-                onChange={e => setConfig(prev => ({ ...prev, gravity: parseFloat(e.target.value) }))}
-                className="w-full accent-[#00a2ff] h-1"
-              />
-            </div>
           </div>
 
           <div className="absolute top-4 left-4 md:top-6 md:left-6 pointer-events-none">
@@ -1381,7 +1370,7 @@ export default function App() {
                   <ul className="list-disc list-inside space-y-1 md:space-y-2">
                     <li><b>Drag</b> the portals to relocate the wormhole.</li>
                     <li><b>Rotate</b> via the white handle to change the exit trajectory.</li>
-                    <li><b>Vacuum Mode</b> removes all atmosphere, allowing balls to gain infinite momentum in a vertical loop.</li>
+                    <li><b>Vacuum Mode</b> removes air damping only, allowing balls to preserve momentum in a vertical loop while gravity strength remains unchanged.</li>
                   </ul>
                 </section>
               </div>
