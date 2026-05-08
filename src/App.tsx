@@ -57,7 +57,7 @@ const HelpTooltip = ({ text }: { text: string }) => {
 
 type Point = { x: number; y: number };
 
-class Ball {
+export class Ball {
   x: number;
   y: number;
   oldX: number;
@@ -193,24 +193,28 @@ class Ball {
     const vx = this.x - this.oldX;
     const vy = this.y - this.oldY;
     const vNormal = vx * nx + vy * ny;
-    
+    const side = Math.sign(dotPrev) || -1;
+
+    // The one-sided portal's solid back face only exists for motion from the
+    // back side into the blocked face. Grazing or separating motion should not
+    // be converted into a wall collision just because it is near the plane.
+    if (side >= 0 || vNormal <= 0) return;
+
     const vtx = vx - vNormal * nx;
     const vty = vy - vNormal * ny;
-    
-    const side = Math.sign(dotPrev); 
     const distToPlane = (this.x - p.x) * nx + (this.y - p.y) * ny;
-    
+
     const clearance = this.radius + 1.1;
     const overlapX = (distToPlane - (side * clearance)) * nx;
     const overlapY = (distToPlane - (side * clearance)) * ny;
-    
+
     this.x -= overlapX;
     this.y -= overlapY;
-    
+
     const restitution = 0.2;
-    const rx = vtx - (vNormal * nx) * restitution;
-    const ry = vty - (vNormal * ny) * restitution;
-    
+    const rx = vtx - vNormal * restitution * nx;
+    const ry = vty - vNormal * restitution * ny;
+
     this.oldX = this.x - rx;
     this.oldY = this.y - ry;
   }
@@ -221,22 +225,32 @@ class Ball {
     const vx = this.x - this.oldX;
     const vy = this.y - this.oldY;
     const vNormal = vx * nx + vy * ny;
-    
-    const vtx = vx - vNormal * nx;
-    const vty = vy - vNormal * ny;
-    
+
     const distToPlane = (this.x - p.x) * nx + (this.y - p.y) * ny;
     const targetDist = -(this.radius + 1.1);
     const overlap = distToPlane - targetDist;
-    
-    this.x -= overlap * nx;
-    this.y -= overlap * ny;
-    
-    const rx = (vNormal > 0) ? vtx : vx;
-    const ry = (vNormal > 0) ? vty : vy;
-    
-    this.oldX = this.x - rx;
-    this.oldY = this.y - ry;
+
+    // Being close to the back support plane is not enough to create a wall.
+    // Only resolve actual penetration of the back plate.
+    if (overlap <= 0) return;
+
+    const correctionX = -overlap * nx;
+    const correctionY = -overlap * ny;
+    this.x += correctionX;
+    this.y += correctionY;
+
+    // Preserve full Verlet velocity when the correction is not fighting deeper
+    // penetration. Only drop the incoming normal component when penetration is
+    // actually increasing; tangential motion is always preserved.
+    if (vNormal > 0) {
+      const vtx = vx - vNormal * nx;
+      const vty = vy - vNormal * ny;
+      this.oldX = this.x - vtx;
+      this.oldY = this.y - vty;
+    } else {
+      this.oldX += correctionX;
+      this.oldY += correctionY;
+    }
   }
 
   teleport(entry: Portal, exit: Portal, interX: number, interY: number) {

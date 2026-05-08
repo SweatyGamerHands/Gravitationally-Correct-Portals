@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { computeGravityAt, getBaselineG, getCrossingIntersection, transformThroughPortal } from '../simulation/physics';
 import { withPortalVectors } from '../simulation/types';
+import { Ball } from '../App';
 
 const portals = [
   withPortalVectors({ id: 'a', x: 100, y: 100, angle: 0, color: '#f90', width: 100 }),
@@ -27,4 +28,33 @@ test('gravity compute returns ambient when correction disabled', () => {
   const g = computeGravityAt(100, 100, portals, { vacuum: false, gravity: 1, correctGravity: false, portalPull: 1 });
   assert.equal(g.x, 0);
   assert.equal(g.y, 800);
+});
+
+
+test('blocked back support does not stop horizontal velocity before penetration on a vertical portal', () => {
+  const portal = withPortalVectors({ id: 'vertical', x: 100, y: 100, angle: Math.PI / 2, color: '#f90', width: 100 });
+  const ball = new Ball(111.3, 100, 10, 1);
+  ball.oldX = 113.3;
+  ball.oldY = 100;
+
+  ball.blockedFaceSupport(portal);
+
+  assert.equal(ball.x, 111.3);
+  assert.equal(ball.y, 100);
+  assert.equal(ball.x - ball.oldX, -2);
+  assert.equal(ball.y - ball.oldY, 0);
+});
+
+test('blocked back support preserves horizontal separating velocity on a vertical portal', () => {
+  const portal = withPortalVectors({ id: 'vertical', x: 100, y: 100, angle: Math.PI / 2, color: '#f90', width: 100 });
+  const ball = new Ball(110, 100, 10, 1);
+  ball.oldX = 105;
+  ball.oldY = 100;
+
+  ball.blockedFaceSupport(portal);
+
+  assert.equal(ball.x, 111.1);
+  assert.equal(ball.y, 100);
+  assert.equal(ball.x - ball.oldX, 5);
+  assert.equal(ball.y - ball.oldY, 0);
 });
