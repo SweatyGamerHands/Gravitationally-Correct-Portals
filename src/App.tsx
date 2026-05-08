@@ -17,7 +17,7 @@ import {
   ChevronRight,
   HelpCircle
 } from 'lucide-react';
-import { computeGravityAt, getBaselineG } from './simulation/physics';
+import { computeGravityAt, getBaselineG, syncPinnedBallToPointer, type DragState } from './simulation/physics';
 import { withPortalVectors, type Portal } from './simulation/types';
 
 // --- Constants & Types ---
@@ -414,41 +414,70 @@ export default function App() {
   
   const [layoutIdx, setLayoutIdx] = useState(2);
   
-  const [dragState, setDragState] = useState<{
-    id: string | null;
-    type: 'ball' | 'portal' | 'handle' | null;
-  }>({ id: null, type: null });
+  const [dragState, setDragState] = useState<DragState>({ id: null, type: null });
 
+  const dragStateRef = useRef<DragState>(dragState);
+  const updateDragState = useCallback((nextDragState: DragState) => {
+    dragStateRef.current = nextDragState;
+    setDragState(nextDragState);
+  }, []);
   const lastPos = useRef({ x: 0, y: 0 });
   const activePointerId = useRef<number | null>(null);
   const frameCount = useRef(0);
   const lastTime = useRef(performance.now());
   const prevTime = useRef(performance.now());
+  const initializedRef = useRef(false);
+  const canvasSizeRef = useRef({ width: 0, height: 0 });
+  const initialPortalWidthRef = useRef(config.portalWidth);
 
-  // Initialize Portals & Canvas Resizing
+  // Initialize Portals once; subsequent resize events only resize/scale the existing scene.
   useEffect(() => {
-    const updatePortalsForSize = (w: number, h: number) => {
-      const cx = w / 2;
-      const cy = h / 2;
-      const initialPortals: Portal[] = [
-        { id: 'orange', x: cx - w * 0.15, y: cy + h * 0.1, angle: -0.6, color: '#ff9d00', width: config.portalWidth, dir: {x:0,y:0}, normal: {x:0,y:0}, handle: {x:0,y:0} },
-        { id: 'blue', x: cx + w * 0.15, y: cy - h * 0.1, angle: 2.5, color: '#00a2ff', width: config.portalWidth, dir: {x:0,y:0}, normal: {x:0,y:0}, handle: {x:0,y:0} }
-      ];
-
-      setPortals(initialPortals.map(withPortalVectors));
-      setObjects([new Ball(w / 2, 100, 15, 20)]);
-    };
-
     if (!containerRef.current || !canvasRef.current) return;
 
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect;
-        if (canvasRef.current) {
-          canvasRef.current.width = width;
-          canvasRef.current.height = height;
-          updatePortalsForSize(width, height);
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        const previousSize = canvasSizeRef.current;
+        canvas.width = width;
+        canvas.height = height;
+
+        if (!initializedRef.current) {
+          const cx = width / 2;
+          const cy = height / 2;
+          const initialPortals: Portal[] = [
+            { id: 'orange', x: cx - width * 0.15, y: cy + height * 0.1, angle: -0.6, color: '#ff9d00', width: initialPortalWidthRef.current, dir: {x:0,y:0}, normal: {x:0,y:0}, handle: {x:0,y:0} },
+            { id: 'blue', x: cx + width * 0.15, y: cy - height * 0.1, angle: 2.5, color: '#00a2ff', width: initialPortalWidthRef.current, dir: {x:0,y:0}, normal: {x:0,y:0}, handle: {x:0,y:0} }
+          ];
+
+          setPortals(initialPortals.map(withPortalVectors));
+          setObjects([new Ball(width / 2, 100, 15, 20)]);
+          initializedRef.current = true;
+        } else if (previousSize.width > 0 && previousSize.height > 0) {
+          const scaleX = width / previousSize.width;
+          const scaleY = height / previousSize.height;
+
+          setPortals(prev => prev.map(portal => withPortalVectors({
+            ...portal,
+            x: portal.x * scaleX,
+            y: portal.y * scaleY,
+          })));
+
+          setObjects(prev => prev.map(obj => {
+            obj.x *= scaleX;
+            obj.y *= scaleY;
+            obj.oldX *= scaleX;
+            obj.oldY *= scaleY;
+            obj.trail = obj.trail.map(point => ({ x: point.x * scaleX, y: point.y * scaleY }));
+            return obj;
+          }));
+
+          lastPos.current = { x: lastPos.current.x * scaleX, y: lastPos.current.y * scaleY };
         }
+
+        canvasSizeRef.current = { width, height };
       }
     });
 
@@ -689,19 +718,7 @@ export default function App() {
       prevTime.current = time;
       const dt = frameDt / config.substeps;
 
-      const pinnedIdx = dragState.type === 'ball' ? parseInt(dragState.id!) : -1;
-
-      // Update pinned ball position BEFORE substeps so collisions reflect actual pointer location this frame
-      if (pinnedIdx !== -1) {
-        const obj = objects[pinnedIdx];
-        if (obj) {
-          // Velocity is derived from current vs previous frame position for kinetic transfer
-          obj.oldX = obj.x;
-          obj.oldY = obj.y;
-          obj.x = lastPos.current.x;
-          obj.y = lastPos.current.y;
-        }
-      }
+      const pinnedIdx = syncPinnedBallToPointer(objects, dragStateRef.current, lastPos.current);
 
       for (let s = 0; s < config.substeps; s++) {
         objects.forEach((obj, index) => {
@@ -805,36 +822,37 @@ export default function App() {
 
     for (const pt of portals) {
       if (Math.hypot(pt.handle.x - p.x, pt.handle.y - p.y) < 30) {
-        setDragState({ id: pt.id, type: 'handle' });
+        updateDragState({ id: pt.id, type: 'handle' });
         return;
       }
     }
     for (const pt of portals) {
       if (Math.hypot(pt.x - p.x, pt.y - p.y) < 50) {
-        setDragState({ id: pt.id, type: 'portal' });
+        updateDragState({ id: pt.id, type: 'portal' });
         return;
       }
     }
     for (let i = objects.length - 1; i >= 0; i--) {
       const obj = objects[i];
       if (Math.hypot(obj.x - p.x, obj.y - p.y) < obj.radius + 20) {
-        setDragState({ id: String(i), type: 'ball' });
+        updateDragState({ id: String(i), type: 'ball' });
         return;
       }
     }
   };
 
   const handleMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!dragState.type || activePointerId.current !== e.pointerId) return;
+    const currentDragState = dragStateRef.current;
+    if (!currentDragState.type || activePointerId.current !== e.pointerId) return;
     e.preventDefault();
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     const p = { x: e.clientX - rect.left, y: e.clientY - rect.top };
 
-    if (dragState.type === 'portal' || dragState.type === 'handle') {
+    if (currentDragState.type === 'portal' || currentDragState.type === 'handle') {
       const updatedPortals = portals.map(pt => {
-        if (pt.id !== dragState.id) return pt;
-        if (dragState.type === 'portal') {
+        if (pt.id !== currentDragState.id) return pt;
+        if (currentDragState.type === 'portal') {
           pt.x = p.x;
           pt.y = p.y;
         } else {
@@ -858,20 +876,21 @@ export default function App() {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
-    setDragState({ id: null, type: null });
+    updateDragState({ id: null, type: null });
   };
 
   useEffect(() => {
     const onWindowPointerMove = (event: PointerEvent) => {
-      if (!dragState.type || activePointerId.current !== event.pointerId) return;
+      const currentDragState = dragStateRef.current;
+      if (!currentDragState.type || activePointerId.current !== event.pointerId) return;
       const rect = canvasRef.current?.getBoundingClientRect();
       if (!rect) return;
       const p = { x: event.clientX - rect.left, y: event.clientY - rect.top };
 
-      if (dragState.type === 'portal' || dragState.type === 'handle') {
+      if (currentDragState.type === 'portal' || currentDragState.type === 'handle') {
         const updatedPortals = portals.map(pt => {
-          if (pt.id !== dragState.id) return pt;
-          if (dragState.type === 'portal') {
+          if (pt.id !== currentDragState.id) return pt;
+          if (currentDragState.type === 'portal') {
             pt.x = p.x;
             pt.y = p.y;
           } else {
@@ -891,7 +910,7 @@ export default function App() {
     const onWindowPointerEnd = (event: PointerEvent) => {
       if (activePointerId.current === null || event.pointerId !== activePointerId.current) return;
       activePointerId.current = null;
-      setDragState({ id: null, type: null });
+      updateDragState({ id: null, type: null });
     };
 
     window.addEventListener('pointermove', onWindowPointerMove);
@@ -903,7 +922,7 @@ export default function App() {
       window.removeEventListener('pointerup', onWindowPointerEnd);
       window.removeEventListener('pointercancel', onWindowPointerEnd);
     };
-  }, [dragState, portals]);
+  }, [portals, updateDragState]);
 
   const addBall = () => {
     const w = canvasRef.current?.width || 800;
