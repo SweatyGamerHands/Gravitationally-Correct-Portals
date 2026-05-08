@@ -24,6 +24,8 @@ import { withPortalVectors, type Portal } from './simulation/types';
 const DEFAULT_SUBSTEPS = 12; 
 const GRID_RES = 30;
 const MAX_TRAIL = 80;
+const MAX_GRID_WARP_RADIUS = 28;
+const GRID_BREAK_MULTIPLIER = 2.5;
 
 const HelpTooltip = ({ text }: { text: string }) => {
   const [show, setShow] = useState(false);
@@ -463,37 +465,64 @@ export default function App() {
     ctx.lineWidth = 1;
     const stepX = w / GRID_RES;
     const stepY = h / GRID_RES;
-    
-    const currentBaseG = getBaselineG(config.vacuum, config.gravity) || 1; // Secure denominator
+    const currentBaseG = getBaselineG(config.vacuum, config.gravity);
+    const safeBaseG = Math.max(Math.abs(currentBaseG), 1);
+    const warpScale = config.gridIntensity * 10;
+
+    const getWarpedGridPoint = (x: number, y: number): Point => {
+      const g = getGravityAt(x, y, currentPortals);
+      const deltaG = { x: g.x, y: g.y - currentBaseG };
+      let offsetX = (deltaG.x / safeBaseG) * warpScale;
+      let offsetY = (deltaG.y / safeBaseG) * warpScale;
+      const offsetMag = Math.hypot(offsetX, offsetY);
+
+      if (offsetMag > MAX_GRID_WARP_RADIUS) {
+        const clampScale = MAX_GRID_WARP_RADIUS / offsetMag;
+        offsetX *= clampScale;
+        offsetY *= clampScale;
+      }
+
+      return { x: x + offsetX, y: y + offsetY };
+    };
+
+    const drawWarpedPolyline = (points: Point[], expectedStep: number) => {
+      const breakThreshold = Math.max(
+        expectedStep * GRID_BREAK_MULTIPLIER,
+        expectedStep + MAX_GRID_WARP_RADIUS * 1.75,
+      );
+
+      ctx.beginPath();
+      points.forEach((point, index) => {
+        if (index === 0) {
+          ctx.moveTo(point.x, point.y);
+          return;
+        }
+
+        const prev = points[index - 1];
+        const warpedStep = Math.hypot(point.x - prev.x, point.y - prev.y);
+        if (warpedStep > breakThreshold) {
+          ctx.moveTo(point.x, point.y);
+        } else {
+          ctx.lineTo(point.x, point.y);
+        }
+      });
+      ctx.stroke();
+    };
 
     for (let i = 0; i <= GRID_RES; i++) {
-      ctx.beginPath();
+      const points: Point[] = [];
       for (let j = 0; j <= GRID_RES; j++) {
-        const x = i * stepX;
-        const y = j * stepY;
-        const g = getGravityAt(x, y, currentPortals);
-        
-        const warpX = x + (g.x / currentBaseG) * config.gridIntensity * 10;
-        const warpY = y + (g.y / currentBaseG) * config.gridIntensity * 10;
-        if (j === 0) ctx.moveTo(warpX, warpY);
-        else ctx.lineTo(warpX, warpY);
+        points.push(getWarpedGridPoint(i * stepX, j * stepY));
       }
-      ctx.stroke();
+      drawWarpedPolyline(points, stepY);
     }
 
     for (let j = 0; j <= GRID_RES; j++) {
-      ctx.beginPath();
+      const points: Point[] = [];
       for (let i = 0; i <= GRID_RES; i++) {
-        const x = i * stepX;
-        const y = j * stepY;
-        const g = getGravityAt(x, y, currentPortals);
-        
-        const warpX = x + (g.x / currentBaseG) * config.gridIntensity * 10;
-        const warpY = y + (g.y / currentBaseG) * config.gridIntensity * 10;
-        if (i === 0) ctx.moveTo(warpX, warpY);
-        else ctx.lineTo(warpX, warpY);
+        points.push(getWarpedGridPoint(i * stepX, j * stepY));
       }
-      ctx.stroke();
+      drawWarpedPolyline(points, stepX);
     }
   }, [getGravityAt, config.gridIntensity, config.vacuum, config.gravity]);
   

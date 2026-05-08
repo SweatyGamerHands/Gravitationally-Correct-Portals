@@ -1,7 +1,23 @@
 import type { Point, Portal } from './types';
 
 export const BASE_G = 800;
+const PORTAL_EDGE_FALLOFF_RATIO = 0.2;
+
 export const getBaselineG = (vacuum: boolean, gravityMult: number) => (vacuum ? 1100 : BASE_G) * gravityMult;
+
+const smoothstep = (t: number) => t * t * (3 - 2 * t);
+
+const getApertureEdgeWeight = (distAlong: number, width: number) => {
+  const halfWidth = width / 2;
+  const falloffBand = Math.max(width * PORTAL_EDGE_FALLOFF_RATIO, 1);
+  const edgeDistance = Math.abs(distAlong) - halfWidth;
+
+  if (edgeDistance <= -falloffBand) return 1;
+  if (edgeDistance >= falloffBand) return 0;
+
+  const bandT = (edgeDistance + falloffBand) / (falloffBand * 2);
+  return 1 - smoothstep(bandT);
+};
 
 export const transformThroughPortal = (vector: Point, entry: Portal, exit: Portal): Point => {
   const along = vector.x * entry.dir.x + vector.y * entry.dir.y;
@@ -31,11 +47,11 @@ export const computeGravityAt = (
     const distNormal = dx * entry.normal.x + dy * entry.normal.y;
     const distAlong = dx * entry.dir.x + dy * entry.dir.y;
     const influenceRange = entry.width * 1.25;
+    const edgeWeight = getApertureEdgeWeight(distAlong, entry.width);
 
-    if (distNormal > 0 && distNormal < influenceRange && Math.abs(distAlong) < entry.width / 2) {
+    if (distNormal > 0 && distNormal < influenceRange && edgeWeight > 0) {
       const leaked = transformThroughPortal(ambient, exit, entry);
       const distWeight = Math.pow(1 - distNormal / influenceRange, 1.5);
-      const edgeWeight = Math.cos((distAlong / (entry.width / 2)) * (Math.PI / 2));
       const weight = distWeight * edgeWeight * config.portalPull;
       gx += (leaked.x - ambient.x) * weight;
       gy += (leaked.y - ambient.y) * weight;
