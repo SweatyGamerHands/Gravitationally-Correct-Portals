@@ -18,3 +18,10 @@ View your app in AI Studio: https://ai.studio/apps/926d1ecf-388c-4054-ac11-c6755
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+## Dependency notes for contributors
+
+- `@types/node` is intentionally retained because TypeScript checks `vite.config.ts`, which imports Node's `path` module.
+- `tailwindcss` is intentionally retained as an indirect build dependency, consumed by the `@tailwindcss/vite` plugin and `@import "tailwindcss"` in `src/index.css`.
+
+- Remaining dependencies are mapped as follows: `react`/`react-dom`/`lucide-react`/`motion` are imported from `src/*.tsx`, and `vite`/`@vitejs/plugin-react`/`@tailwindcss/vite`/`tailwindcss` are imported or referenced by `vite.config.ts` and `src/index.css`.
