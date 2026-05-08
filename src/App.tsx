@@ -17,8 +17,15 @@ import {
   ChevronRight,
   HelpCircle
 } from 'lucide-react';
-import { computeGravityAt, getBaselineG } from './simulation/physics';
-import { withPortalVectors, type Portal } from './simulation/types';
+import {
+  computeGravityAt,
+  getBaselineG,
+  getScaledFrameDt,
+  integratePosition,
+  integrateVelocity,
+  transformThroughPortal,
+} from './simulation/physics';
+import { withPortalVectors, type Point, type Portal } from './simulation/types';
 
 // --- Constants & Types ---
 const DEFAULT_SUBSTEPS = 12; 
@@ -55,13 +62,13 @@ const HelpTooltip = ({ text }: { text: string }) => {
   );
 };
 
-type Point = { x: number; y: number };
-
 class Ball {
   x: number;
   y: number;
   oldX: number;
   oldY: number;
+  vx: number;
+  vy: number;
   radius: number;
   mass: number;
   cooldown: number;
@@ -73,6 +80,8 @@ class Ball {
     this.y = y;
     this.oldX = x;
     this.oldY = y;
+    this.vx = 0;
+    this.vy = 0;
     this.radius = r;
     this.mass = m;
     this.cooldown = 0;
@@ -85,17 +94,17 @@ class Ball {
     gravityFn: (x: number, y: number) => Point, 
     dt: number
   ) {
-    const vx = (this.x - this.oldX);
-    const vy = (this.y - this.oldY);
     const g = gravityFn(this.x, this.y);
 
     this.oldX = this.x;
     this.oldY = this.y;
-    
-    // Strict Verlet Integration using absolute seconds
-    const frictionSub = Math.pow(friction, dt * 60); 
-    this.x += vx * frictionSub + g.x * dt * dt; 
-    this.y += vy * frictionSub + g.y * dt * dt;
+
+    const nextVelocity = integrateVelocity({ x: this.vx, y: this.vy }, g, friction, dt);
+    const nextPosition = integratePosition({ x: this.x, y: this.y }, nextVelocity, dt);
+    this.vx = nextVelocity.x;
+    this.vy = nextVelocity.y;
+    this.x = nextPosition.x;
+    this.y = nextPosition.y;
 
     if (this.cooldown > 0) this.cooldown--;
     
@@ -140,10 +149,10 @@ class Ball {
   constrain(width: number, height: number, portals: Portal[], bounce: number, twoSided: boolean) {
     // 1. Boundaries
     const margin = this.radius;
-    if (this.y > height - margin) { this.y = height - margin; this.oldY = this.y + (this.y - this.oldY) * bounce; }
-    if (this.x < margin) { this.x = margin; this.oldX = this.x + (this.x - this.oldX) * bounce; }
-    if (this.x > width - margin) { this.x = width - margin; this.oldX = this.x + (this.x - this.oldX) * bounce; }
-    if (this.y < margin) { this.y = margin; this.oldY = this.y + (this.y - this.oldY) * bounce; }
+    if (this.y > height - margin) { this.y = height - margin; this.vy = -this.vy * bounce; this.oldY = this.y; }
+    if (this.x < margin) { this.x = margin; this.vx = -this.vx * bounce; this.oldX = this.x; }
+    if (this.x > width - margin) { this.x = width - margin; this.vx = -this.vx * bounce; this.oldX = this.x; }
+    if (this.y < margin) { this.y = margin; this.vy = -this.vy * bounce; this.oldY = this.y; }
 
     // 2. Portal Statics (Endcaps and Persistent Blocked-Face Support)
     for (const p1 of portals) {
@@ -162,14 +171,13 @@ class Ball {
             const nx = dx / dist; const ny = dy / dist;
             const overlap = minDist - dist;
             this.x += nx * overlap; this.y += ny * overlap;
-            const vx = this.x - this.oldX; const vy = this.y - this.oldY;
-            const dot = vx * nx + vy * ny;
+            const dot = this.vx * nx + this.vy * ny;
             if (dot < 0) {
-              const rx = vx - 2 * dot * nx; const ry = vy - 2 * dot * ny;
-              this.oldX = this.x - rx * bounce; this.oldY = this.y - ry * bounce;
-            } else {
-               this.oldX += nx * overlap; this.oldY += ny * overlap;
+              this.vx = (this.vx - 2 * dot * nx) * bounce;
+              this.vy = (this.vy - 2 * dot * ny) * bounce;
             }
+            this.oldX = this.x;
+            this.oldY = this.y;
           }
         }
 
@@ -190,12 +198,10 @@ class Ball {
   blockedFaceImpact(p: Portal, dotPrev: number) {
     const nx = p.normal.x;
     const ny = p.normal.y;
-    const vx = this.x - this.oldX;
-    const vy = this.y - this.oldY;
-    const vNormal = vx * nx + vy * ny;
+    const vNormal = this.vx * nx + this.vy * ny;
     
-    const vtx = vx - vNormal * nx;
-    const vty = vy - vNormal * ny;
+    const vtx = this.vx - vNormal * nx;
+    const vty = this.vy - vNormal * ny;
     
     const side = Math.sign(dotPrev); 
     const distToPlane = (this.x - p.x) * nx + (this.y - p.y) * ny;
@@ -211,19 +217,19 @@ class Ball {
     const rx = vtx - (vNormal * nx) * restitution;
     const ry = vty - (vNormal * ny) * restitution;
     
-    this.oldX = this.x - rx;
-    this.oldY = this.y - ry;
+    this.vx = rx;
+    this.vy = ry;
+    this.oldX = this.x;
+    this.oldY = this.y;
   }
 
   blockedFaceSupport(p: Portal) {
     const nx = p.normal.x;
     const ny = p.normal.y;
-    const vx = this.x - this.oldX;
-    const vy = this.y - this.oldY;
-    const vNormal = vx * nx + vy * ny;
+    const vNormal = this.vx * nx + this.vy * ny;
     
-    const vtx = vx - vNormal * nx;
-    const vty = vy - vNormal * ny;
+    const vtx = this.vx - vNormal * nx;
+    const vty = this.vy - vNormal * ny;
     
     const distToPlane = (this.x - p.x) * nx + (this.y - p.y) * ny;
     const targetDist = -(this.radius + 1.1);
@@ -232,17 +238,13 @@ class Ball {
     this.x -= overlap * nx;
     this.y -= overlap * ny;
     
-    const rx = (vNormal > 0) ? vtx : vx;
-    const ry = (vNormal > 0) ? vty : vy;
-    
-    this.oldX = this.x - rx;
-    this.oldY = this.y - ry;
+    this.vx = (vNormal > 0) ? vtx : this.vx;
+    this.vy = (vNormal > 0) ? vty : this.vy;
+    this.oldX = this.x;
+    this.oldY = this.y;
   }
 
   teleport(entry: Portal, exit: Portal, interX: number, interY: number) {
-    const vx = this.x - this.oldX;
-    const vy = this.y - this.oldY;
-
     // 1. Residual post-intersection displacement still owed this frame
     const resX = this.x - interX;
     const resY = this.y - interY;
@@ -255,14 +257,13 @@ class Ball {
     const mappedInterY = exit.y + dLocInter * exit.dir.y - nLocInter * exit.normal.y;
 
     // 3. Decompose velocity AND residual motion against Entry Portal basis
-    const vAlong = vx * entry.dir.x + vy * entry.dir.y;
-    const vNorm = vx * entry.normal.x + vy * entry.normal.y;
+    const mappedVelocity = transformThroughPortal({ x: this.vx, y: this.vy }, entry, exit);
     const resAlong = resX * entry.dir.x + resY * entry.dir.y;
     const resNorm = resX * entry.normal.x + resY * entry.normal.y;
 
     // 4. Reconstruct in Exit Portal basis (inverting normal traversing the space-bridge)
-    const newVx = vAlong * exit.dir.x - vNorm * exit.normal.x;
-    const newVy = vAlong * exit.dir.y - vNorm * exit.normal.y;
+    const newVx = mappedVelocity.x;
+    const newVy = mappedVelocity.y;
     const newResX = resAlong * exit.dir.x - resNorm * exit.normal.x;
     const newResY = resAlong * exit.dir.y - resNorm * exit.normal.y;
 
@@ -274,19 +275,19 @@ class Ball {
     this.x = mappedInterX + newResX + exit.normal.x * flowSign * clearanceEps;
     this.y = mappedInterY + newResY + exit.normal.y * flowSign * clearanceEps;
 
-    // Reverse map velocity state precisely into oldX
-    this.oldX = this.x - newVx;
-    this.oldY = this.y - newVy;
+    // Store transformed velocity explicitly in px/sec; old position is only the crossing segment anchor.
+    this.vx = newVx;
+    this.vy = newVy;
+    this.oldX = this.x;
+    this.oldY = this.y;
     
     this.cooldown = 4;
     this.trail = []; 
   }
 
   draw(ctx: CanvasRenderingContext2D, trailIntensity: number, portals: Portal[], twoSided: boolean) {
-    const vx = this.x - this.oldX;
-    const vy = this.y - this.oldY;
-    const speedSq = vx * vx + vy * vy;
-    const heat = Math.min(1, speedSq / 200);
+    const speedSq = this.vx * this.vx + this.vy * this.vy;
+    const heat = Math.min(1, speedSq / 720000);
     
     this.drawTrail(ctx, trailIntensity, heat);
 
@@ -598,24 +599,24 @@ export default function App() {
           b2.x += posCorrectionX * w2;
           b2.y += posCorrectionY * w2;
           
-          // 2. Synchronous Shift tracking strictly exact to conserve prior momentum perfectly
-          b1.oldX -= posCorrectionX * w1;
-          b1.oldY -= posCorrectionY * w1;
-          b2.oldX += posCorrectionX * w2;
-          b2.oldY += posCorrectionY * w2;
+          // 2. Re-anchor previous positions after positional correction; momentum lives in px/sec.
+          b1.oldX = b1.x;
+          b1.oldY = b1.y;
+          b2.oldX = b2.x;
+          b2.oldY = b2.y;
           
-          // 3. Explicit Physical Collision Response mapped directly via velocity restitution
-          const rVx = (b1.x - b1.oldX) - (b2.x - b2.oldX);
-          const rVy = (b1.y - b1.oldY) - (b2.y - b2.oldY);
+          // 3. Explicit physical collision response using px/sec velocity restitution.
+          const rVx = b1.vx - b2.vx;
+          const rVy = b1.vy - b2.vy;
           const relVelDist = rVx * nx + rVy * ny;
           
           // Objects are strictly approaching each other
           if (relVelDist > 0) {
               const impulse = (1 + bounce) * relVelDist;
-              b1.oldX += impulse * nx * w1;
-              b1.oldY += impulse * ny * w1;
-              b2.oldX -= impulse * nx * w2;
-              b2.oldY -= impulse * ny * w2;
+              b1.vx -= impulse * nx * w1;
+              b1.vy -= impulse * ny * w1;
+              b2.vx += impulse * nx * w2;
+              b2.vy += impulse * ny * w2;
           }
         }
       }
@@ -656,7 +657,8 @@ export default function App() {
       const bounce = config.elasticity;
       
       // Calculate proper timestep based on actual frame performance
-      const frameDt = Math.min(1 / 30, (time - prevTime.current) / 1000) * config.timeScale;
+      const realFrameDt = (time - prevTime.current) / 1000;
+      const frameDt = getScaledFrameDt(realFrameDt, config.timeScale);
       prevTime.current = time;
       const dt = frameDt / config.substeps;
 
@@ -666,11 +668,17 @@ export default function App() {
       if (pinnedIdx !== -1) {
         const obj = objects[pinnedIdx];
         if (obj) {
-          // Velocity is derived from current vs previous frame position for kinetic transfer
-          obj.oldX = obj.x;
-          obj.oldY = obj.y;
+          // Release velocity is pointer delta over elapsed simulation time, not raw frame displacement.
+          const prevX = obj.x;
+          const prevY = obj.y;
+          obj.oldX = prevX;
+          obj.oldY = prevY;
           obj.x = lastPos.current.x;
           obj.y = lastPos.current.y;
+          if (frameDt > 0) {
+            obj.vx = (obj.x - prevX) / frameDt;
+            obj.vy = (obj.y - prevY) / frameDt;
+          }
         }
       }
 
