@@ -829,12 +829,18 @@ export default function App() {
     return () => cancelAnimationFrame(animationId);
   }, [objects, portals, config, drawGrid, drawFlow, getGravityAt, resolveCollisions]);
 
+  const activeTouchId = useRef<number | null>(null);
+
   const handleStart = (e: React.MouseEvent | React.TouchEvent) => {
     const isTouch = 'targetTouches' in e;
     if (isTouch) {
       if (e.cancelable) e.preventDefault();
     }
-    const touch = isTouch ? e.targetTouches[0] : (e as React.MouseEvent);
+    const touch = isTouch
+      ? ((e.touches[0] ?? e.changedTouches[0]) || null)
+      : (e as React.MouseEvent);
+    if (!touch) return;
+    if (isTouch) activeTouchId.current = touch.identifier;
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     const p = { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
@@ -867,7 +873,10 @@ export default function App() {
     if (isTouch) {
       if (e.cancelable) e.preventDefault();
     }
-    const touch = isTouch ? e.targetTouches[0] : (e as React.MouseEvent);
+    const touch = isTouch
+      ? ([...e.touches, ...e.changedTouches].find(t => t.identifier === activeTouchId.current) || null)
+      : (e as React.MouseEvent);
+    if (!touch) return;
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     const p = { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
@@ -893,7 +902,15 @@ export default function App() {
     lastPos.current = p;
   };
 
-  const handleEnd = () => setDragState({ id: null, type: null });
+  const handleEnd = (e?: React.MouseEvent | React.TouchEvent) => {
+    if (e && 'changedTouches' in e && activeTouchId.current !== null) {
+      const ended = [...e.changedTouches].some(t => t.identifier === activeTouchId.current);
+      if (ended) activeTouchId.current = null;
+    } else if (!e || !('changedTouches' in e)) {
+      activeTouchId.current = null;
+    }
+    setDragState({ id: null, type: null });
+  };
 
   const addBall = () => {
     const w = canvasRef.current?.width || 800;
@@ -1160,6 +1177,7 @@ export default function App() {
             onTouchStart={handleStart}
             onTouchMove={handleMove}
             onTouchEnd={handleEnd}
+            onTouchCancel={handleEnd}
             className="w-full h-full cursor-crosshair block touch-none"
           />
           
