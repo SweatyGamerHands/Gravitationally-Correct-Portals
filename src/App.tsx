@@ -895,6 +895,34 @@ export default function App() {
 
   const handleEnd = () => setDragState({ id: null, type: null });
 
+  useEffect(() => {
+    if (!dragState.type) return;
+
+    const onTouchMove = (event: TouchEvent) => {
+      handleMove(event as unknown as React.TouchEvent);
+    };
+    const onTouchEnd = () => {
+      handleEnd();
+    };
+    const onMouseMove = (event: MouseEvent) => {
+      handleMove(event as unknown as React.MouseEvent);
+    };
+
+    window.addEventListener('touchmove', onTouchMove, { passive: false });
+    window.addEventListener('touchend', onTouchEnd);
+    window.addEventListener('touchcancel', onTouchEnd);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onTouchEnd);
+
+    return () => {
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onTouchEnd);
+      window.removeEventListener('touchcancel', onTouchEnd);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onTouchEnd);
+    };
+  }, [dragState.type, handleMove, handleEnd]);
+
   const addBall = () => {
     const w = canvasRef.current?.width || 800;
     setObjects(prev => [...prev, new Ball(w / 2, 100, config.size, config.mass)]);
