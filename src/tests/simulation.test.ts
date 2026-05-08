@@ -8,9 +8,9 @@ const portals = [
   withPortalVectors({ id: 'b', x: 300, y: 100, angle: Math.PI, color: '#09f', width: 100 }),
 ];
 
-test('baseline gravity respects vacuum mode', () => {
+test('baseline gravity ignores vacuum mode', () => {
   assert.equal(getBaselineG(false, 1), 800);
-  assert.equal(getBaselineG(true, 1), 1100);
+  assert.equal(getBaselineG(true, 1), 800);
 });
 
 test('portal transform flips normal component', () => {

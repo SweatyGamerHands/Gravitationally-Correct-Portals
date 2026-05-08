@@ -1,7 +1,7 @@
 import type { Point, Portal } from './types';
 
 export const BASE_G = 800;
-export const getBaselineG = (vacuum: boolean, gravityMult: number) => (vacuum ? 1100 : BASE_G) * gravityMult;
+export const getBaselineG = (_vacuum: boolean, gravityMult: number) => BASE_G * gravityMult;
 
 export const transformThroughPortal = (vector: Point, entry: Portal, exit: Portal): Point => {
   const along = vector.x * entry.dir.x + vector.y * entry.dir.y;
