@@ -26,6 +26,8 @@ import {
   transformThroughPortal,
 } from './simulation/physics';
 import { withPortalVectors, type Point, type Portal } from './simulation/types';
+import { computeGravityAt, getBaselineG, syncPinnedBallToPointer, type DragState } from './simulation/physics';
+import { withPortalVectors, type Portal } from './simulation/types';
 
 // --- Constants & Types ---
 const DEFAULT_SUBSTEPS = 12; 
@@ -413,41 +415,70 @@ export default function App() {
   
   const [layoutIdx, setLayoutIdx] = useState(2);
   
-  const [dragState, setDragState] = useState<{
-    id: string | null;
-    type: 'ball' | 'portal' | 'handle' | null;
-  }>({ id: null, type: null });
+  const [dragState, setDragState] = useState<DragState>({ id: null, type: null });
 
+  const dragStateRef = useRef<DragState>(dragState);
+  const updateDragState = useCallback((nextDragState: DragState) => {
+    dragStateRef.current = nextDragState;
+    setDragState(nextDragState);
+  }, []);
   const lastPos = useRef({ x: 0, y: 0 });
   const activePointerId = useRef<number | null>(null);
   const frameCount = useRef(0);
   const lastTime = useRef(performance.now());
   const prevTime = useRef(performance.now());
+  const initializedRef = useRef(false);
+  const canvasSizeRef = useRef({ width: 0, height: 0 });
+  const initialPortalWidthRef = useRef(config.portalWidth);
 
-  // Initialize Portals & Canvas Resizing
+  // Initialize Portals once; subsequent resize events only resize/scale the existing scene.
   useEffect(() => {
-    const updatePortalsForSize = (w: number, h: number) => {
-      const cx = w / 2;
-      const cy = h / 2;
-      const initialPortals: Portal[] = [
-        { id: 'orange', x: cx - w * 0.15, y: cy + h * 0.1, angle: -0.6, color: '#ff9d00', width: config.portalWidth, dir: {x:0,y:0}, normal: {x:0,y:0}, handle: {x:0,y:0} },
-        { id: 'blue', x: cx + w * 0.15, y: cy - h * 0.1, angle: 2.5, color: '#00a2ff', width: config.portalWidth, dir: {x:0,y:0}, normal: {x:0,y:0}, handle: {x:0,y:0} }
-      ];
-
-      setPortals(initialPortals.map(withPortalVectors));
-      setObjects([new Ball(w / 2, 100, 15, 20)]);
-    };
-
     if (!containerRef.current || !canvasRef.current) return;
 
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect;
-        if (canvasRef.current) {
-          canvasRef.current.width = width;
-          canvasRef.current.height = height;
-          updatePortalsForSize(width, height);
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        const previousSize = canvasSizeRef.current;
+        canvas.width = width;
+        canvas.height = height;
+
+        if (!initializedRef.current) {
+          const cx = width / 2;
+          const cy = height / 2;
+          const initialPortals: Portal[] = [
+            { id: 'orange', x: cx - width * 0.15, y: cy + height * 0.1, angle: -0.6, color: '#ff9d00', width: initialPortalWidthRef.current, dir: {x:0,y:0}, normal: {x:0,y:0}, handle: {x:0,y:0} },
+            { id: 'blue', x: cx + width * 0.15, y: cy - height * 0.1, angle: 2.5, color: '#00a2ff', width: initialPortalWidthRef.current, dir: {x:0,y:0}, normal: {x:0,y:0}, handle: {x:0,y:0} }
+          ];
+
+          setPortals(initialPortals.map(withPortalVectors));
+          setObjects([new Ball(width / 2, 100, 15, 20)]);
+          initializedRef.current = true;
+        } else if (previousSize.width > 0 && previousSize.height > 0) {
+          const scaleX = width / previousSize.width;
+          const scaleY = height / previousSize.height;
+
+          setPortals(prev => prev.map(portal => withPortalVectors({
+            ...portal,
+            x: portal.x * scaleX,
+            y: portal.y * scaleY,
+          })));
+
+          setObjects(prev => prev.map(obj => {
+            obj.x *= scaleX;
+            obj.y *= scaleY;
+            obj.oldX *= scaleX;
+            obj.oldY *= scaleY;
+            obj.trail = obj.trail.map(point => ({ x: point.x * scaleX, y: point.y * scaleY }));
+            return obj;
+          }));
+
+          lastPos.current = { x: lastPos.current.x * scaleX, y: lastPos.current.y * scaleY };
         }
+
+        canvasSizeRef.current = { width, height };
       }
     });
 
@@ -681,6 +712,7 @@ export default function App() {
           }
         }
       }
+      const pinnedIdx = syncPinnedBallToPointer(objects, dragStateRef.current, lastPos.current);
 
       for (let s = 0; s < config.substeps; s++) {
         objects.forEach((obj, index) => {
@@ -784,36 +816,37 @@ export default function App() {
 
     for (const pt of portals) {
       if (Math.hypot(pt.handle.x - p.x, pt.handle.y - p.y) < 30) {
-        setDragState({ id: pt.id, type: 'handle' });
+        updateDragState({ id: pt.id, type: 'handle' });
         return;
       }
     }
     for (const pt of portals) {
       if (Math.hypot(pt.x - p.x, pt.y - p.y) < 50) {
-        setDragState({ id: pt.id, type: 'portal' });
+        updateDragState({ id: pt.id, type: 'portal' });
         return;
       }
     }
     for (let i = objects.length - 1; i >= 0; i--) {
       const obj = objects[i];
       if (Math.hypot(obj.x - p.x, obj.y - p.y) < obj.radius + 20) {
-        setDragState({ id: String(i), type: 'ball' });
+        updateDragState({ id: String(i), type: 'ball' });
         return;
       }
     }
   };
 
   const handleMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!dragState.type || activePointerId.current !== e.pointerId) return;
+    const currentDragState = dragStateRef.current;
+    if (!currentDragState.type || activePointerId.current !== e.pointerId) return;
     e.preventDefault();
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     const p = { x: e.clientX - rect.left, y: e.clientY - rect.top };
 
-    if (dragState.type === 'portal' || dragState.type === 'handle') {
+    if (currentDragState.type === 'portal' || currentDragState.type === 'handle') {
       const updatedPortals = portals.map(pt => {
-        if (pt.id !== dragState.id) return pt;
-        if (dragState.type === 'portal') {
+        if (pt.id !== currentDragState.id) return pt;
+        if (currentDragState.type === 'portal') {
           pt.x = p.x;
           pt.y = p.y;
         } else {
@@ -837,20 +870,21 @@ export default function App() {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
-    setDragState({ id: null, type: null });
+    updateDragState({ id: null, type: null });
   };
 
   useEffect(() => {
     const onWindowPointerMove = (event: PointerEvent) => {
-      if (!dragState.type || activePointerId.current !== event.pointerId) return;
+      const currentDragState = dragStateRef.current;
+      if (!currentDragState.type || activePointerId.current !== event.pointerId) return;
       const rect = canvasRef.current?.getBoundingClientRect();
       if (!rect) return;
       const p = { x: event.clientX - rect.left, y: event.clientY - rect.top };
 
-      if (dragState.type === 'portal' || dragState.type === 'handle') {
+      if (currentDragState.type === 'portal' || currentDragState.type === 'handle') {
         const updatedPortals = portals.map(pt => {
-          if (pt.id !== dragState.id) return pt;
-          if (dragState.type === 'portal') {
+          if (pt.id !== currentDragState.id) return pt;
+          if (currentDragState.type === 'portal') {
             pt.x = p.x;
             pt.y = p.y;
           } else {
@@ -870,7 +904,7 @@ export default function App() {
     const onWindowPointerEnd = (event: PointerEvent) => {
       if (activePointerId.current === null || event.pointerId !== activePointerId.current) return;
       activePointerId.current = null;
-      setDragState({ id: null, type: null });
+      updateDragState({ id: null, type: null });
     };
 
     window.addEventListener('pointermove', onWindowPointerMove);
@@ -882,7 +916,7 @@ export default function App() {
       window.removeEventListener('pointerup', onWindowPointerEnd);
       window.removeEventListener('pointercancel', onWindowPointerEnd);
     };
-  }, [dragState, portals]);
+  }, [portals, updateDragState]);
 
   const addBall = () => {
     const w = canvasRef.current?.width || 800;
@@ -1026,8 +1060,8 @@ export default function App() {
               </div>
               <div className="space-y-1">
                 <div className="flex justify-between text-[8px] uppercase font-bold text-white/30">
-                  <span className="flex items-center">G-Constant <HelpTooltip text="The global downward gravitational weight applied to all entities." /></span>
-                  <span>{config.gravity.toFixed(1)}</span>
+                  <span className="flex items-center">Physical Gravity <HelpTooltip text="The single global downward acceleration multiplier applied to all sandbox entities." /></span>
+                  <span>{config.gravity.toFixed(1)}x</span>
                 </div>
                 <input 
                   type="range" min="0" max="5" step="0.1"
@@ -1093,7 +1127,7 @@ export default function App() {
 
             <div className="space-y-2">
               <div className="flex justify-between text-[10px] uppercase font-bold text-white/50">
-                <span className="flex items-center">Grav Pull <HelpTooltip text="Transmission coefficient of the portal bridge. Determines how much of the ambient gravitational field from the linked side leaks through to this aperture." /></span>
+                <span className="flex items-center">Portal Gravity Leakage <HelpTooltip text="Portal-specific transmission coefficient. Determines how much of the linked side's ambient gravitational field leaks through this aperture." /></span>
                 <span className="text-[#ff9d00]">{config.portalPull.toFixed(1)}x</span>
               </div>
               <input 
@@ -1175,7 +1209,7 @@ export default function App() {
                 >
                   <Zap size={16} className="md:w-[18px] md:h-[18px]" />
                 </button>
-                <HelpTooltip text="Enables gravitational frame-transfer. Gravity from the linked portal's side is transmitted and reoriented through the aperture." />
+                <HelpTooltip text="Toggles portal frame-transfer: linked-side gravity is transmitted and reoriented through apertures. This does not change the global gravity strength." />
               </div>
 
               <div className="relative">
@@ -1185,21 +1219,10 @@ export default function App() {
                 >
                   <Wind size={16} className="md:w-[18px] md:h-[18px]" />
                 </button>
-                <HelpTooltip text="Disables all air damping for infinite momentum loops." />
+                <HelpTooltip text="Vacuum disables air damping for infinite momentum loops. Baseline gravity strength stays controlled by the Physical Gravity slider." />
               </div>
             </div>
 
-            <div className="flex flex-col gap-1 w-16 md:w-24">
-              <span className="text-[7px] md:text-[8px] uppercase font-bold tracking-widest text-white/40 flex items-center">
-                Gravity <HelpTooltip text="The global downward acceleration applied to all sandbox entities." />
-              </span>
-              <input 
-                type="range" min="0" max="2" step="0.1" 
-                value={config.gravity} 
-                onChange={e => setConfig(prev => ({ ...prev, gravity: parseFloat(e.target.value) }))}
-                className="w-full accent-[#00a2ff] h-1"
-              />
-            </div>
           </div>
 
           <div className="absolute top-4 left-4 md:top-6 md:left-6 pointer-events-none">
@@ -1370,7 +1393,7 @@ export default function App() {
                   <ul className="list-disc list-inside space-y-1 md:space-y-2">
                     <li><b>Drag</b> the portals to relocate the wormhole.</li>
                     <li><b>Rotate</b> via the white handle to change the exit trajectory.</li>
-                    <li><b>Vacuum Mode</b> removes all atmosphere, allowing balls to gain infinite momentum in a vertical loop.</li>
+                    <li><b>Vacuum Mode</b> removes air damping only, allowing balls to preserve momentum in a vertical loop while gravity strength remains unchanged.</li>
                   </ul>
                 </section>
               </div>

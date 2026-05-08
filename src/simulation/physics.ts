@@ -34,6 +34,7 @@ export const simulateLinearDisplacement = (
   y: velocity.y * realElapsedSeconds * timeScale,
 });
 export const getBaselineG = (vacuum: boolean, gravityMult: number) => (vacuum ? 1100 : BASE_G) * gravityMult;
+export const getBaselineG = (_vacuum: boolean, gravityMult: number) => BASE_G * gravityMult;
 
 export const transformThroughPortal = (vector: Point, entry: Portal, exit: Portal): Point => {
   const along = vector.x * entry.dir.x + vector.y * entry.dir.y;
@@ -42,6 +43,42 @@ export const transformThroughPortal = (vector: Point, entry: Portal, exit: Porta
     x: along * exit.dir.x - normal * exit.normal.x,
     y: along * exit.dir.y - normal * exit.normal.y,
   };
+};
+
+
+export type DragState = {
+  id: string | null;
+  type: 'ball' | 'portal' | 'handle' | null;
+};
+
+type VerletBody = {
+  x: number;
+  y: number;
+  oldX: number;
+  oldY: number;
+};
+
+export const getPinnedBallIndex = (dragState: DragState): number => {
+  if (dragState.type !== 'ball' || dragState.id === null) return -1;
+  const pinnedIdx = Number(dragState.id);
+  return Number.isInteger(pinnedIdx) && pinnedIdx >= 0 ? pinnedIdx : -1;
+};
+
+export const syncPinnedBallToPointer = <T extends VerletBody>(
+  bodies: T[],
+  dragState: DragState,
+  pointer: Point,
+): number => {
+  const pinnedIdx = getPinnedBallIndex(dragState);
+  const body = bodies[pinnedIdx];
+  if (!body) return -1;
+
+  body.oldX = body.x;
+  body.oldY = body.y;
+  body.x = pointer.x;
+  body.y = pointer.y;
+
+  return pinnedIdx;
 };
 
 export const computeGravityAt = (
