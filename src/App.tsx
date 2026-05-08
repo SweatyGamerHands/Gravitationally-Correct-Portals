@@ -418,6 +418,7 @@ export default function App() {
   }>({ id: null, type: null });
 
   const lastPos = useRef({ x: 0, y: 0 });
+  const activePointerId = useRef<number | null>(null);
   const frameCount = useRef(0);
   const lastTime = useRef(performance.now());
   const prevTime = useRef(performance.now());
@@ -764,15 +765,13 @@ export default function App() {
     return () => cancelAnimationFrame(animationId);
   }, [objects, portals, config, drawGrid, drawFlow, getGravityAt, resolveCollisions]);
 
-  const handleStart = (e: React.MouseEvent | React.TouchEvent) => {
-    const isTouch = 'targetTouches' in e;
-    if (isTouch) {
-      if (e.cancelable) e.preventDefault();
-    }
-    const touch = isTouch ? e.targetTouches[0] : (e as React.MouseEvent);
+  const handleStart = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    activePointerId.current = e.pointerId;
+    e.currentTarget.setPointerCapture(e.pointerId);
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const p = { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+    const p = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     lastPos.current = p;
 
     for (const pt of portals) {
@@ -796,16 +795,12 @@ export default function App() {
     }
   };
 
-  const handleMove = (e: React.MouseEvent | React.TouchEvent) => {
-    if (!dragState.type) return;
-    const isTouch = 'targetTouches' in e;
-    if (isTouch) {
-      if (e.cancelable) e.preventDefault();
-    }
-    const touch = isTouch ? e.targetTouches[0] : (e as React.MouseEvent);
+  const handleMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!dragState.type || activePointerId.current !== e.pointerId) return;
+    e.preventDefault();
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const p = { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+    const p = { x: e.clientX - rect.left, y: e.clientY - rect.top };
 
     if (dragState.type === 'portal' || dragState.type === 'handle') {
       const updatedPortals = portals.map(pt => {
@@ -828,7 +823,58 @@ export default function App() {
     lastPos.current = p;
   };
 
-  const handleEnd = () => setDragState({ id: null, type: null });
+  const handleEnd = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (activePointerId.current !== null && e.pointerId !== activePointerId.current) return;
+    activePointerId.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    setDragState({ id: null, type: null });
+  };
+
+  useEffect(() => {
+    const onWindowPointerMove = (event: PointerEvent) => {
+      if (!dragState.type || activePointerId.current !== event.pointerId) return;
+      const rect = canvasRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const p = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+
+      if (dragState.type === 'portal' || dragState.type === 'handle') {
+        const updatedPortals = portals.map(pt => {
+          if (pt.id !== dragState.id) return pt;
+          if (dragState.type === 'portal') {
+            pt.x = p.x;
+            pt.y = p.y;
+          } else {
+            pt.angle = Math.atan2(p.y - pt.y, p.x - pt.x) - Math.PI / 2;
+          }
+          pt.dir = { x: Math.cos(pt.angle), y: Math.sin(pt.angle) };
+          pt.normal = { x: -Math.sin(pt.angle), y: Math.cos(pt.angle) };
+          pt.handle = { x: pt.x + pt.normal.x * 60, y: pt.y + pt.normal.y * 60 };
+          return { ...pt };
+        });
+        setPortals(updatedPortals);
+      }
+
+      lastPos.current = p;
+    };
+
+    const onWindowPointerEnd = (event: PointerEvent) => {
+      if (activePointerId.current === null || event.pointerId !== activePointerId.current) return;
+      activePointerId.current = null;
+      setDragState({ id: null, type: null });
+    };
+
+    window.addEventListener('pointermove', onWindowPointerMove);
+    window.addEventListener('pointerup', onWindowPointerEnd);
+    window.addEventListener('pointercancel', onWindowPointerEnd);
+
+    return () => {
+      window.removeEventListener('pointermove', onWindowPointerMove);
+      window.removeEventListener('pointerup', onWindowPointerEnd);
+      window.removeEventListener('pointercancel', onWindowPointerEnd);
+    };
+  }, [dragState, portals]);
 
   const addBall = () => {
     const w = canvasRef.current?.width || 800;
@@ -1083,12 +1129,10 @@ export default function App() {
         <div ref={containerRef} className="lg:col-span-2 lg:row-span-2 bg-[#0a0a0c] border border-white/10 rounded-2xl relative overflow-hidden h-[65vh] lg:h-auto order-2 lg:order-none">
           <canvas
             ref={canvasRef}
-            onMouseDown={handleStart}
-            onMouseMove={handleMove}
-            onMouseUp={handleEnd}
-            onTouchStart={handleStart}
-            onTouchMove={handleMove}
-            onTouchEnd={handleEnd}
+            onPointerDown={handleStart}
+            onPointerMove={handleMove}
+            onPointerUp={handleEnd}
+            onPointerCancel={handleEnd}
             className="w-full h-full cursor-crosshair block touch-none"
           />
           
