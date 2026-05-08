@@ -5,7 +5,7 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
+import {
   Settings2, 
   Trash2, 
   Plus, 
@@ -17,17 +17,13 @@ import {
   ChevronRight,
   HelpCircle
 } from 'lucide-react';
+import { computeGravityAt, getBaselineG } from './simulation/physics';
+import { withPortalVectors, type Portal } from './simulation/types';
 
 // --- Constants & Types ---
 const DEFAULT_SUBSTEPS = 12; 
 const GRID_RES = 30;
-const BASE_G = 800; // Exact pixel acceleration per second squared
 const MAX_TRAIL = 80;
-
-// Universal baseline mapping for visual-physics synchronization
-const getBaselineG = (vacuum: boolean, gravityMult: number) => {
-  return (vacuum ? 1100 : BASE_G) * gravityMult;
-};
 
 const HelpTooltip = ({ text }: { text: string }) => {
   const [show, setShow] = useState(false);
@@ -60,17 +56,6 @@ const HelpTooltip = ({ text }: { text: string }) => {
 };
 
 type Point = { x: number; y: number };
-type Portal = {
-  id: string;
-  x: number;
-  y: number;
-  angle: number;
-  color: string;
-  width: number;
-  dir: Point;
-  normal: Point;
-  handle: Point;
-};
 
 class Ball {
   x: number;
@@ -447,14 +432,7 @@ export default function App() {
         { id: 'blue', x: cx + w * 0.15, y: cy - h * 0.1, angle: 2.5, color: '#00a2ff', width: config.portalWidth, dir: {x:0,y:0}, normal: {x:0,y:0}, handle: {x:0,y:0} }
       ];
 
-      const updateVectors = (p: Portal) => {
-        p.dir = { x: Math.cos(p.angle), y: Math.sin(p.angle) };
-        p.normal = { x: -Math.sin(p.angle), y: Math.cos(p.angle) };
-        p.handle = { x: p.x + p.normal.x * 60, y: p.y + p.normal.y * 60 };
-        return p;
-      };
-
-      setPortals(initialPortals.map(updateVectors));
+      setPortals(initialPortals.map(withPortalVectors));
       setObjects([new Ball(w / 2, 100, 15, 20)]);
     };
 
@@ -476,50 +454,7 @@ export default function App() {
   }, []);
 
   const getGravityAt = useCallback((x: number, y: number, currentPortals: Portal[]) => {
-    const currentBaseG = getBaselineG(config.vacuum, config.gravity);
-    
-    // 1. Ambient Gravity (Always uniform downward on this scale)
-    let gx = 0;
-    let gy = currentBaseG;
-    
-    if (!config.correctGravity || currentPortals.length < 2) return { x: gx, y: gy };
-
-    const ambientG = { x: 0, y: currentBaseG };
-
-    // 2. Transferred Gravity (Transmission through the portal bridge)
-    currentPortals.forEach((entry, i) => {
-      const exit = currentPortals[(i + 1) % 2];
-      
-      const dx = x - entry.x;
-      const dy = y - entry.y;
-      
-      const distNormal = dx * entry.normal.x + dy * entry.normal.y; 
-      const distAlong = dx * entry.dir.x + dy * entry.dir.y; 
-      
-      const influenceRange = entry.width * 1.25;
-      if (distNormal > 0 && distNormal < influenceRange && Math.abs(distAlong) < entry.width / 2) {
-        
-        // 1. Decompose ambient gravity into exit basis
-        const aDir = ambientG.x * exit.dir.x + ambientG.y * exit.dir.y;
-        const aNorm = ambientG.x * exit.normal.x + ambientG.y * exit.normal.y;
-        
-        // 2. Re-map into entry basis (Inverting Normal component for bridge traversal)
-        const leakedGX = (aDir * entry.dir.x) - (aNorm * entry.normal.x);
-        const leakedGY = (aDir * entry.dir.y) - (aNorm * entry.normal.y);
-
-        // 3. Spatially localized weighting
-        const distWeight = Math.pow(1 - (distNormal / influenceRange), 1.5);
-        const edgeWeight = Math.cos((distAlong / (entry.width / 2)) * (Math.PI / 2));
-        
-        const weight = distWeight * edgeWeight * config.portalPull;
-
-        // Blend local fields representing precise acceleration displacement mapping
-        gx += (leakedGX - ambientG.x) * weight;
-        gy += (leakedGY - ambientG.y) * weight;
-      }
-    });
-
-    return { x: gx, y: gy };
+    return computeGravityAt(x, y, currentPortals, config);
   }, [config.gravity, config.correctGravity, config.vacuum, config.portalPull]);
 
   const drawGrid = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number, currentPortals: Portal[]) => {
@@ -934,18 +869,12 @@ export default function App() {
     setPortals(prev => {
       const p1 = { ...prev[0], x: l.p1.x, y: l.p1.y, angle: l.p1.a };
       const p2 = { ...prev[1], x: l.p2.x, y: l.p2.y, angle: l.p2.a };
-      const update = (p: Portal) => {
-        p.dir = { x: Math.cos(p.angle), y: Math.sin(p.angle) };
-        p.normal = { x: -Math.sin(p.angle), y: Math.cos(p.angle) };
-        p.handle = { x: p.x + p.normal.x * 60, y: p.y + p.normal.y * 60 };
-        return p;
-      };
-      return [update(p1), update(p2)];
+      return [withPortalVectors(p1), withPortalVectors(p2)];
     });
   };
 
   return (
-    <div className="bg-[#050508] text-white w-full min-h-screen p-4 md:p-6 font-sans overflow-x-hidden lg:overflow-hidden lg:h-screen lg:w-screen">
+    <div className="app-root bg-[#050508] text-white w-full min-h-screen p-4 md:p-6 font-sans overflow-x-hidden lg:overflow-hidden lg:h-screen lg:w-screen">
       <div className="flex flex-col lg:grid lg:grid-cols-4 lg:grid-rows-3 gap-4 lg:h-full">
         
         {/* Hero Card */}
@@ -1398,28 +1327,7 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      <style dangerouslySetInnerHTML={{ __html: `
-        input[type=range] {
-          -webkit-appearance: none;
-          background: transparent;
-        }
-        input[type=range]::-webkit-slider-runnable-track {
-          width: 100%;
-          height: 1px;
-          cursor: pointer;
-          background: rgba(255, 255, 255, 0.1);
-        }
-        input[type=range]::-webkit-slider-thumb {
-          height: 10px;
-          width: 10px;
-          border-radius: 50%;
-          background: #00a2ff;
-          cursor: pointer;
-          -webkit-appearance: none;
-          margin-top: -4.5px;
-          box-shadow: 0 0 10px rgba(0, 162, 255, 0.5);
-        }
-      `}} />
+      
     </div>
   );
 }
