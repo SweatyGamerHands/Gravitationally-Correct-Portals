@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { computeGravityAt, getBaselineG, getCrossingIntersection, transformThroughPortal } from '../simulation/physics';
 import { withPortalVectors } from '../simulation/types';
-import { Ball } from '../App';
+import { Ball } from '../simulation/Ball';
 
 const portals = [
   withPortalVectors({ id: 'a', x: 100, y: 100, angle: 0, color: '#f90', width: 100 }),
