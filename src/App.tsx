@@ -737,26 +737,9 @@ export default function App() {
       prevTime.current = time;
       const dt = frameDt / config.substeps;
 
-      const pinnedIdx = dragState.type === 'ball' ? parseInt(dragState.id!) : -1;
-
       // Update pinned ball position BEFORE substeps so collisions reflect actual pointer location this frame
-      if (pinnedIdx !== -1) {
-        const obj = objects[pinnedIdx];
-        if (obj) {
-          // Release velocity is pointer delta over elapsed simulation time, not raw frame displacement.
-          const prevX = obj.x;
-          const prevY = obj.y;
-          obj.oldX = prevX;
-          obj.oldY = prevY;
-          obj.x = lastPos.current.x;
-          obj.y = lastPos.current.y;
-          if (frameDt > 0) {
-            obj.vx = (obj.x - prevX) / frameDt;
-            obj.vy = (obj.y - prevY) / frameDt;
-          }
-        }
-      }
-      const pinnedIdx = syncPinnedBallToPointer(objects, dragStateRef.current, lastPos.current);
+      // Release velocity is pointer delta over elapsed simulation time, not raw frame displacement.
+      const pinnedIdx = syncPinnedBallToPointer(objects, dragStateRef.current, lastPos.current, frameDt);
 
       for (let s = 0; s < config.substeps; s++) {
         objects.forEach((obj, index) => {

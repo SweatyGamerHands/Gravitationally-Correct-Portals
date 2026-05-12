@@ -135,6 +135,8 @@ type VerletBody = {
   y: number;
   oldX: number;
   oldY: number;
+  vx?: number;
+  vy?: number;
 };
 
 export const getPinnedBallIndex = (dragState: DragState): number => {
@@ -147,15 +149,23 @@ export const syncPinnedBallToPointer = <T extends VerletBody>(
   bodies: T[],
   dragState: DragState,
   pointer: Point,
+  frameDt?: number,
 ): number => {
   const pinnedIdx = getPinnedBallIndex(dragState);
   const body = bodies[pinnedIdx];
   if (!body) return -1;
 
-  body.oldX = body.x;
-  body.oldY = body.y;
+  const prevX = body.x;
+  const prevY = body.y;
+  body.oldX = prevX;
+  body.oldY = prevY;
   body.x = pointer.x;
   body.y = pointer.y;
+
+  if (frameDt !== undefined && frameDt > 0 && body.vx !== undefined && body.vy !== undefined) {
+    body.vx = (body.x - prevX) / frameDt;
+    body.vy = (body.y - prevY) / frameDt;
+  }
 
   return pinnedIdx;
 };
