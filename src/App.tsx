@@ -432,12 +432,9 @@ export default function App() {
   
   const [layoutIdx, setLayoutIdx] = useState(2);
   
-  const [dragState, setDragState] = useState<DragState>({ id: null, type: null });
-
-  const dragStateRef = useRef<DragState>(dragState);
+  const dragStateRef = useRef<DragState>({ id: null, type: null });
   const updateDragState = useCallback((nextDragState: DragState) => {
     dragStateRef.current = nextDragState;
-    setDragState(nextDragState);
   }, []);
   const lastPos = useRef({ x: 0, y: 0 });
   const activePointerId = useRef<number | null>(null);
