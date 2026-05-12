@@ -4,6 +4,10 @@ import {
   computeGravityAt,
   getBaselineG,
   getCrossingIntersection,
+  getScaledFrameDt,
+  integratePosition,
+  integrateVelocity,
+  simulateLinearDisplacement,
   getPortalLocal,
   getPortalSegmentCollision,
   isWithinPortalAperture,
@@ -39,6 +43,32 @@ test('gravity compute returns ambient when correction disabled', () => {
 });
 
 
+test('scaled frame dt applies timeScale linearly', () => {
+  assert.equal(getScaledFrameDt(1 / 60, 0.5), 1 / 120);
+  assert.equal(getScaledFrameDt(1 / 60, 2), 1 / 30);
+});
+
+test('timeScale controls displacement predictably over equal real time', () => {
+  const velocity = { x: 120, y: -40 };
+  const slow = simulateLinearDisplacement(velocity, 1, 0.5);
+  const normal = simulateLinearDisplacement(velocity, 1, 1);
+  const fast = simulateLinearDisplacement(velocity, 1, 2);
+
+  assert.ok(Math.abs(slow.x - normal.x * 0.5) < 1e-9);
+  assert.ok(Math.abs(slow.y - normal.y * 0.5) < 1e-9);
+  assert.ok(Math.abs(fast.x - normal.x * 2) < 1e-9);
+  assert.ok(Math.abs(fast.y - normal.y * 2) < 1e-9);
+});
+
+test('explicit velocity integration uses seconds for velocity and acceleration', () => {
+  const dt = getScaledFrameDt(1 / 60, 2);
+  const nextVelocity = integrateVelocity({ x: 60, y: 0 }, { x: 0, y: 120 }, 1, dt);
+  const nextPosition = integratePosition({ x: 0, y: 0 }, nextVelocity, dt);
+
+  assert.equal(nextVelocity.x, 60);
+  assert.equal(nextVelocity.y, 4);
+  assert.ok(Math.abs(nextPosition.x - 2) < 1e-9);
+  assert.ok(Math.abs(nextPosition.y - 2 / 15) < 1e-9);
 test('crossing near positive aperture edge includes ball radius overlap', () => {
   const portal = portals[0];
   const radius = 10;

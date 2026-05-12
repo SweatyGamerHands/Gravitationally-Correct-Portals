@@ -1,6 +1,38 @@
 import type { Point, Portal } from './types';
 
 export const BASE_G = 800;
+
+export const MAX_FRAME_DT = 1 / 30;
+
+export const getScaledFrameDt = (realFrameDt: number, timeScale: number, maxFrameDt = MAX_FRAME_DT) =>
+  Math.min(maxFrameDt, Math.max(0, realFrameDt)) * timeScale;
+
+export const integrateVelocity = (
+  velocity: Point,
+  acceleration: Point,
+  friction: number,
+  dt: number,
+): Point => {
+  const frictionStep = Math.pow(friction, dt * 60);
+  return {
+    x: velocity.x * frictionStep + acceleration.x * dt,
+    y: velocity.y * frictionStep + acceleration.y * dt,
+  };
+};
+
+export const integratePosition = (position: Point, velocity: Point, dt: number): Point => ({
+  x: position.x + velocity.x * dt,
+  y: position.y + velocity.y * dt,
+});
+
+export const simulateLinearDisplacement = (
+  velocity: Point,
+  realElapsedSeconds: number,
+  timeScale: number,
+): Point => ({
+  x: velocity.x * realElapsedSeconds * timeScale,
+  y: velocity.y * realElapsedSeconds * timeScale,
+});
 export const PORTAL_APERTURE_RADIUS_EPSILON = 0.001;
 export const PORTAL_EDGE_RADIUS = 1;
 export const TELEPORT_COOLDOWN_DISTANCE = 8;
