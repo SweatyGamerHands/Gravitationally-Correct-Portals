@@ -43,7 +43,6 @@ export type PortalLocal = {
   along: number;
 };
 
-export const getBaselineG = (vacuum: boolean, gravityMult: number) => (vacuum ? 1100 : BASE_G) * gravityMult;
 export const getBaselineG = (_vacuum: boolean, gravityMult: number) => BASE_G * gravityMult;
 
 export const getPortalLocal = (point: Point, portal: Portal): PortalLocal => {
@@ -183,18 +182,14 @@ export const computeGravityAt = (
   const ambient = { x: 0, y: currentBaseG };
 
   portals.forEach((entry, i) => {
-    const exit = portals[(i + 1) % 2];
+    const exit = portals[(i + 1) % portals.length];
     const local = getPortalLocal({ x, y }, entry);
     const influenceRange = entry.width * 1.25;
-    const edgeWeight = getApertureEdgeWeight(distAlong, entry.width);
+    const edgeWeight = getApertureEdgeWeight(local.along, entry.width);
 
-    if (distNormal > 0 && distNormal < influenceRange && edgeWeight > 0) {
-      const leaked = transformThroughPortal(ambient, exit, entry);
-      const distWeight = Math.pow(1 - distNormal / influenceRange, 1.5);
-    if (local.normal > 0 && local.normal < influenceRange && isWithinPortalAperture(local, entry)) {
+    if (local.normal > 0 && local.normal < influenceRange && edgeWeight > 0) {
       const leaked = transformThroughPortal(ambient, exit, entry);
       const distWeight = Math.pow(1 - local.normal / influenceRange, 1.5);
-      const edgeWeight = Math.cos((local.along / getPortalApertureHalfWidth(entry)) * (Math.PI / 2));
       const weight = distWeight * edgeWeight * config.portalPull;
       gx += (leaked.x - ambient.x) * weight;
       gy += (leaked.y - ambient.y) * weight;
