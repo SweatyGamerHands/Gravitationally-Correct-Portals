@@ -17,6 +17,23 @@ import {
   ChevronRight,
   HelpCircle
 } from 'lucide-react';
+import {
+  computeGravityAt,
+  getBaselineG,
+  getScaledFrameDt,
+  integratePosition,
+  integrateVelocity,
+  transformThroughPortal,
+} from './simulation/physics';
+import { withPortalVectors, type Point, type Portal } from './simulation/types';
+  TELEPORT_COOLDOWN_DISTANCE,
+  computeGravityAt,
+  getBaselineG,
+  getCrossingIntersection,
+  getPortalLocal,
+  getPortalSegmentCollision,
+  isWithinPortalAperture,
+} from './simulation/physics';
 import { computeGravityAt, getBaselineG, syncPinnedBallToPointer, type DragState } from './simulation/physics';
 import { withPortalVectors, type Portal } from './simulation/types';
 
@@ -57,13 +74,13 @@ const HelpTooltip = ({ text }: { text: string }) => {
   );
 };
 
-type Point = { x: number; y: number };
-
 class Ball {
   x: number;
   y: number;
   oldX: number;
   oldY: number;
+  vx: number;
+  vy: number;
   radius: number;
   mass: number;
   cooldown: number;
@@ -75,6 +92,8 @@ class Ball {
     this.y = y;
     this.oldX = x;
     this.oldY = y;
+    this.vx = 0;
+    this.vy = 0;
     this.radius = r;
     this.mass = m;
     this.cooldown = 0;
@@ -87,19 +106,19 @@ class Ball {
     gravityFn: (x: number, y: number) => Point, 
     dt: number
   ) {
-    const vx = (this.x - this.oldX);
-    const vy = (this.y - this.oldY);
     const g = gravityFn(this.x, this.y);
 
     this.oldX = this.x;
     this.oldY = this.y;
-    
-    // Strict Verlet Integration using absolute seconds
-    const frictionSub = Math.pow(friction, dt * 60); 
-    this.x += vx * frictionSub + g.x * dt * dt; 
-    this.y += vy * frictionSub + g.y * dt * dt;
 
-    if (this.cooldown > 0) this.cooldown--;
+    const nextVelocity = integrateVelocity({ x: this.vx, y: this.vy }, g, friction, dt);
+    const nextPosition = integratePosition({ x: this.x, y: this.y }, nextVelocity, dt);
+    this.vx = nextVelocity.x;
+    this.vy = nextVelocity.y;
+    this.x = nextPosition.x;
+    this.y = nextPosition.y;
+
+    if (this.cooldown > 0) this.cooldown = Math.max(0, this.cooldown - Math.hypot(this.x - this.oldX, this.y - this.oldY));
     
     if (Math.random() > 0.8) {
       this.trail.push({ x: this.x, y: this.y });
@@ -112,29 +131,24 @@ class Ball {
         const p1 = portals[i];
         const p2 = portals[(i+1)%2];
         
-        const dotPrev = (this.oldX - p1.x) * p1.normal.x + (this.oldY - p1.y) * p1.normal.y;
-        const dotCurr = (this.x - p1.x) * p1.normal.x + (this.y - p1.y) * p1.normal.y;
-        
-        if (Math.sign(dotPrev) !== Math.sign(dotCurr)) {
-            const t = Math.abs(dotPrev) / (Math.abs(dotPrev) + Math.abs(dotCurr));
-            const interX = this.oldX + (this.x - this.oldX) * t;
-            const interY = this.oldY + (this.y - this.oldY) * t;
-            const distAlong = (interX - p1.x) * p1.dir.x + (interY - p1.y) * p1.dir.y;
-            
-            // Check if crossing happens strictly WITHIN the visible aperture geometry
-            if (Math.abs(distAlong) <= p1.width / 2) {
-                const fromFront = dotPrev > 0;
-                if (this.cooldown > 0) continue;
+        const crossing = getCrossingIntersection(
+          { x: this.oldX, y: this.oldY },
+          { x: this.x, y: this.y },
+          p1,
+          this.radius
+        );
+        if (!crossing) continue;
 
-                if (twoSided || fromFront) {
-                    this.teleport(p1, p2, interX, interY);
-                    return;
-                } else {
-                    // One-sided portal crossing: Blocked-face Impact (Rebound)
-                    this.blockedFaceImpact(p1, dotPrev);
-                    return;
-                }
-            }
+        const fromFront = crossing.dotPrev > 0;
+        if (this.cooldown > 0) continue;
+
+        if (twoSided || fromFront) {
+            this.teleport(p1, p2, crossing.interX, crossing.interY);
+            return;
+        } else {
+            // One-sided portal crossing: Blocked-face Impact (Rebound)
+            this.blockedFaceImpact(p1, crossing.dotPrev);
+            return;
         }
     }
   }
@@ -142,10 +156,10 @@ class Ball {
   constrain(width: number, height: number, portals: Portal[], bounce: number, twoSided: boolean) {
     // 1. Boundaries
     const margin = this.radius;
-    if (this.y > height - margin) { this.y = height - margin; this.oldY = this.y + (this.y - this.oldY) * bounce; }
-    if (this.x < margin) { this.x = margin; this.oldX = this.x + (this.x - this.oldX) * bounce; }
-    if (this.x > width - margin) { this.x = width - margin; this.oldX = this.x + (this.x - this.oldX) * bounce; }
-    if (this.y < margin) { this.y = margin; this.oldY = this.y + (this.y - this.oldY) * bounce; }
+    if (this.y > height - margin) { this.y = height - margin; this.vy = -this.vy * bounce; this.oldY = this.y; }
+    if (this.x < margin) { this.x = margin; this.vx = -this.vx * bounce; this.oldX = this.x; }
+    if (this.x > width - margin) { this.x = width - margin; this.vx = -this.vx * bounce; this.oldX = this.x; }
+    if (this.y < margin) { this.y = margin; this.vy = -this.vy * bounce; this.oldY = this.y; }
 
     // 2. Portal Statics (Endcaps and Persistent Blocked-Face Support)
     for (const p1 of portals) {
@@ -164,26 +178,37 @@ class Ball {
             const nx = dx / dist; const ny = dy / dist;
             const overlap = minDist - dist;
             this.x += nx * overlap; this.y += ny * overlap;
-            const vx = this.x - this.oldX; const vy = this.y - this.oldY;
-            const dot = vx * nx + vy * ny;
+            const dot = this.vx * nx + this.vy * ny;
             if (dot < 0) {
-              const rx = vx - 2 * dot * nx; const ry = vy - 2 * dot * ny;
-              this.oldX = this.x - rx * bounce; this.oldY = this.y - ry * bounce;
-            } else {
-               this.oldX += nx * overlap; this.oldY += ny * overlap;
+              this.vx = (this.vx - 2 * dot * nx) * bounce;
+              this.vy = (this.vy - 2 * dot * ny) * bounce;
             }
+            this.oldX = this.x;
+            this.oldY = this.y;
+        const edgeHit = getPortalSegmentCollision({ x: this.x, y: this.y }, this.radius, p1);
+        if (edgeHit) {
+          const { normal, overlap } = edgeHit;
+          this.x += normal.x * overlap;
+          this.y += normal.y * overlap;
+          const vx = this.x - this.oldX;
+          const vy = this.y - this.oldY;
+          const dot = vx * normal.x + vy * normal.y;
+          if (dot < 0) {
+            const rx = vx - 2 * dot * normal.x;
+            const ry = vy - 2 * dot * normal.y;
+            this.oldX = this.x - rx * bounce;
+            this.oldY = this.y - ry * bounce;
+          } else {
+            this.oldX += normal.x * overlap;
+            this.oldY += normal.y * overlap;
           }
         }
 
         if (!twoSided) {
-          const dx = this.x - p1.x; const dy = this.y - p1.y;
-          const distNormal = dx * p1.normal.x + dy * p1.normal.y;
-          // Persistent Support: If ball is on back side and within support threshold
-          if (distNormal < 0 && distNormal > -(this.radius + 1.4)) {
-            const distAlong = dx * p1.dir.x + dy * p1.dir.y;
-            if (Math.abs(distAlong) <= p1.width / 2) {
-              this.blockedFaceSupport(p1);
-            }
+          const local = getPortalLocal({ x: this.x, y: this.y }, p1);
+          // Persistent Support: If ball is on back side and physically overlaps the aperture
+          if (local.normal < 0 && local.normal > -(this.radius + 1.4) && isWithinPortalAperture(local, p1, this.radius)) {
+            this.blockedFaceSupport(p1);
           }
         }
     }
@@ -192,12 +217,10 @@ class Ball {
   blockedFaceImpact(p: Portal, dotPrev: number) {
     const nx = p.normal.x;
     const ny = p.normal.y;
-    const vx = this.x - this.oldX;
-    const vy = this.y - this.oldY;
-    const vNormal = vx * nx + vy * ny;
+    const vNormal = this.vx * nx + this.vy * ny;
     
-    const vtx = vx - vNormal * nx;
-    const vty = vy - vNormal * ny;
+    const vtx = this.vx - vNormal * nx;
+    const vty = this.vy - vNormal * ny;
     
     const side = Math.sign(dotPrev); 
     const distToPlane = (this.x - p.x) * nx + (this.y - p.y) * ny;
@@ -213,19 +236,19 @@ class Ball {
     const rx = vtx - (vNormal * nx) * restitution;
     const ry = vty - (vNormal * ny) * restitution;
     
-    this.oldX = this.x - rx;
-    this.oldY = this.y - ry;
+    this.vx = rx;
+    this.vy = ry;
+    this.oldX = this.x;
+    this.oldY = this.y;
   }
 
   blockedFaceSupport(p: Portal) {
     const nx = p.normal.x;
     const ny = p.normal.y;
-    const vx = this.x - this.oldX;
-    const vy = this.y - this.oldY;
-    const vNormal = vx * nx + vy * ny;
+    const vNormal = this.vx * nx + this.vy * ny;
     
-    const vtx = vx - vNormal * nx;
-    const vty = vy - vNormal * ny;
+    const vtx = this.vx - vNormal * nx;
+    const vty = this.vy - vNormal * ny;
     
     const distToPlane = (this.x - p.x) * nx + (this.y - p.y) * ny;
     const targetDist = -(this.radius + 1.1);
@@ -234,37 +257,33 @@ class Ball {
     this.x -= overlap * nx;
     this.y -= overlap * ny;
     
-    const rx = (vNormal > 0) ? vtx : vx;
-    const ry = (vNormal > 0) ? vty : vy;
-    
-    this.oldX = this.x - rx;
-    this.oldY = this.y - ry;
+    this.vx = (vNormal > 0) ? vtx : this.vx;
+    this.vy = (vNormal > 0) ? vty : this.vy;
+    this.oldX = this.x;
+    this.oldY = this.y;
   }
 
   teleport(entry: Portal, exit: Portal, interX: number, interY: number) {
-    const vx = this.x - this.oldX;
-    const vy = this.y - this.oldY;
-
     // 1. Residual post-intersection displacement still owed this frame
     const resX = this.x - interX;
     const resY = this.y - interY;
 
     // 2. Mapped crossing coordinate onto the Exit Portal plane
-    const dLocInter = (interX - entry.x) * entry.dir.x + (interY - entry.y) * entry.dir.y;
-    const nLocInter = (interX - entry.x) * entry.normal.x + (interY - entry.y) * entry.normal.y;
+    const interLocal = getPortalLocal({ x: interX, y: interY }, entry);
+    const dLocInter = interLocal.along;
+    const nLocInter = interLocal.normal;
 
     const mappedInterX = exit.x + dLocInter * exit.dir.x - nLocInter * exit.normal.x;
     const mappedInterY = exit.y + dLocInter * exit.dir.y - nLocInter * exit.normal.y;
 
     // 3. Decompose velocity AND residual motion against Entry Portal basis
-    const vAlong = vx * entry.dir.x + vy * entry.dir.y;
-    const vNorm = vx * entry.normal.x + vy * entry.normal.y;
+    const mappedVelocity = transformThroughPortal({ x: this.vx, y: this.vy }, entry, exit);
     const resAlong = resX * entry.dir.x + resY * entry.dir.y;
     const resNorm = resX * entry.normal.x + resY * entry.normal.y;
 
     // 4. Reconstruct in Exit Portal basis (inverting normal traversing the space-bridge)
-    const newVx = vAlong * exit.dir.x - vNorm * exit.normal.x;
-    const newVy = vAlong * exit.dir.y - vNorm * exit.normal.y;
+    const newVx = mappedVelocity.x;
+    const newVy = mappedVelocity.y;
     const newResX = resAlong * exit.dir.x - resNorm * exit.normal.x;
     const newResY = resAlong * exit.dir.y - resNorm * exit.normal.y;
 
@@ -276,34 +295,31 @@ class Ball {
     this.x = mappedInterX + newResX + exit.normal.x * flowSign * clearanceEps;
     this.y = mappedInterY + newResY + exit.normal.y * flowSign * clearanceEps;
 
-    // Reverse map velocity state precisely into oldX
-    this.oldX = this.x - newVx;
-    this.oldY = this.y - newVy;
+    // Store transformed velocity explicitly in px/sec; old position is only the crossing segment anchor.
+    this.vx = newVx;
+    this.vy = newVy;
+    this.oldX = this.x;
+    this.oldY = this.y;
     
-    this.cooldown = 4;
+    this.cooldown = TELEPORT_COOLDOWN_DISTANCE;
     this.trail = []; 
   }
 
   draw(ctx: CanvasRenderingContext2D, trailIntensity: number, portals: Portal[], twoSided: boolean) {
-    const vx = this.x - this.oldX;
-    const vy = this.y - this.oldY;
-    const speedSq = vx * vx + vy * vy;
-    const heat = Math.min(1, speedSq / 200);
+    const speedSq = this.vx * this.vx + this.vy * this.vy;
+    const heat = Math.min(1, speedSq / 720000);
     
     this.drawTrail(ctx, trailIntensity, heat);
 
     let overlap: { entry: Portal; exit: Portal; d: number } | null = null;
     for (let i = 0; i < 2; i++) {
         const p = portals[i];
-        const distAlong = (this.x - p.x) * p.dir.x + (this.y - p.y) * p.dir.y;
-        if (Math.abs(distAlong) < p.width/2 + this.radius) {
-            const d = (this.x - p.x) * p.normal.x + (this.y - p.y) * p.normal.y;
-            if (Math.abs(d) < this.radius) {
-                // If one-sided, only allow dual rendering if the ball center is on the front face (d > 0)
-                if (twoSided || d >= 0) {
-                  overlap = { entry: p, exit: portals[(i + 1) % 2], d };
-                  break;
-                }
+        const local = getPortalLocal({ x: this.x, y: this.y }, p);
+        if (isWithinPortalAperture(local, p, this.radius) && Math.abs(local.normal) < this.radius) {
+            // If one-sided, only allow dual rendering if the ball center is on the front face (d > 0)
+            if (twoSided || local.normal >= 0) {
+              overlap = { entry: p, exit: portals[(i + 1) % 2], d: local.normal };
+              break;
             }
         }
     }
@@ -353,7 +369,7 @@ class Ball {
 
   renderDual(ctx: CanvasRenderingContext2D, entry: Portal, exit: Portal, nLoc: number, heat: number) {
     // Basis Vector Clone Placement
-    const dLoc = (this.x - entry.x) * entry.dir.x + (this.y - entry.y) * entry.dir.y;
+    const dLoc = getPortalLocal({ x: this.x, y: this.y }, entry).along;
     // Parameter 'nLoc' passed from overlap check is exactly the Normal distance
     const isFront = nLoc >= 0;
     
@@ -656,24 +672,24 @@ export default function App() {
           b2.x += posCorrectionX * w2;
           b2.y += posCorrectionY * w2;
           
-          // 2. Synchronous Shift tracking strictly exact to conserve prior momentum perfectly
-          b1.oldX -= posCorrectionX * w1;
-          b1.oldY -= posCorrectionY * w1;
-          b2.oldX += posCorrectionX * w2;
-          b2.oldY += posCorrectionY * w2;
+          // 2. Re-anchor previous positions after positional correction; momentum lives in px/sec.
+          b1.oldX = b1.x;
+          b1.oldY = b1.y;
+          b2.oldX = b2.x;
+          b2.oldY = b2.y;
           
-          // 3. Explicit Physical Collision Response mapped directly via velocity restitution
-          const rVx = (b1.x - b1.oldX) - (b2.x - b2.oldX);
-          const rVy = (b1.y - b1.oldY) - (b2.y - b2.oldY);
+          // 3. Explicit physical collision response using px/sec velocity restitution.
+          const rVx = b1.vx - b2.vx;
+          const rVy = b1.vy - b2.vy;
           const relVelDist = rVx * nx + rVy * ny;
           
           // Objects are strictly approaching each other
           if (relVelDist > 0) {
               const impulse = (1 + bounce) * relVelDist;
-              b1.oldX += impulse * nx * w1;
-              b1.oldY += impulse * ny * w1;
-              b2.oldX -= impulse * nx * w2;
-              b2.oldY -= impulse * ny * w2;
+              b1.vx -= impulse * nx * w1;
+              b1.vy -= impulse * ny * w1;
+              b2.vx += impulse * nx * w2;
+              b2.vy += impulse * ny * w2;
           }
         }
       }
@@ -714,10 +730,30 @@ export default function App() {
       const bounce = config.elasticity;
       
       // Calculate proper timestep based on actual frame performance
-      const frameDt = Math.min(1 / 30, (time - prevTime.current) / 1000) * config.timeScale;
+      const realFrameDt = (time - prevTime.current) / 1000;
+      const frameDt = getScaledFrameDt(realFrameDt, config.timeScale);
       prevTime.current = time;
       const dt = frameDt / config.substeps;
 
+      const pinnedIdx = dragState.type === 'ball' ? parseInt(dragState.id!) : -1;
+
+      // Update pinned ball position BEFORE substeps so collisions reflect actual pointer location this frame
+      if (pinnedIdx !== -1) {
+        const obj = objects[pinnedIdx];
+        if (obj) {
+          // Release velocity is pointer delta over elapsed simulation time, not raw frame displacement.
+          const prevX = obj.x;
+          const prevY = obj.y;
+          obj.oldX = prevX;
+          obj.oldY = prevY;
+          obj.x = lastPos.current.x;
+          obj.y = lastPos.current.y;
+          if (frameDt > 0) {
+            obj.vx = (obj.x - prevX) / frameDt;
+            obj.vy = (obj.y - prevY) / frameDt;
+          }
+        }
+      }
       const pinnedIdx = syncPinnedBallToPointer(objects, dragStateRef.current, lastPos.current);
 
       for (let s = 0; s < config.substeps; s++) {
@@ -1066,8 +1102,8 @@ export default function App() {
               </div>
               <div className="space-y-1">
                 <div className="flex justify-between text-[8px] uppercase font-bold text-white/30">
-                  <span className="flex items-center">G-Constant <HelpTooltip text="The global downward gravitational weight applied to all entities." /></span>
-                  <span>{config.gravity.toFixed(1)}</span>
+                  <span className="flex items-center">Physical Gravity <HelpTooltip text="The single global downward acceleration multiplier applied to all sandbox entities." /></span>
+                  <span>{config.gravity.toFixed(1)}x</span>
                 </div>
                 <input 
                   type="range" min="0" max="5" step="0.1"
@@ -1133,7 +1169,7 @@ export default function App() {
 
             <div className="space-y-2">
               <div className="flex justify-between text-[10px] uppercase font-bold text-white/50">
-                <span className="flex items-center">Grav Pull <HelpTooltip text="Transmission coefficient of the portal bridge. Determines how much of the ambient gravitational field from the linked side leaks through to this aperture." /></span>
+                <span className="flex items-center">Portal Gravity Leakage <HelpTooltip text="Portal-specific transmission coefficient. Determines how much of the linked side's ambient gravitational field leaks through this aperture." /></span>
                 <span className="text-[#ff9d00]">{config.portalPull.toFixed(1)}x</span>
               </div>
               <input 
@@ -1215,7 +1251,7 @@ export default function App() {
                 >
                   <Zap size={16} className="md:w-[18px] md:h-[18px]" />
                 </button>
-                <HelpTooltip text="Enables gravitational frame-transfer. Gravity from the linked portal's side is transmitted and reoriented through the aperture." />
+                <HelpTooltip text="Toggles portal frame-transfer: linked-side gravity is transmitted and reoriented through apertures. This does not change the global gravity strength." />
               </div>
 
               <div className="relative">
@@ -1225,21 +1261,10 @@ export default function App() {
                 >
                   <Wind size={16} className="md:w-[18px] md:h-[18px]" />
                 </button>
-                <HelpTooltip text="Disables all air damping for infinite momentum loops." />
+                <HelpTooltip text="Vacuum disables air damping for infinite momentum loops. Baseline gravity strength stays controlled by the Physical Gravity slider." />
               </div>
             </div>
 
-            <div className="flex flex-col gap-1 w-16 md:w-24">
-              <span className="text-[7px] md:text-[8px] uppercase font-bold tracking-widest text-white/40 flex items-center">
-                Gravity <HelpTooltip text="The global downward acceleration applied to all sandbox entities." />
-              </span>
-              <input 
-                type="range" min="0" max="2" step="0.1" 
-                value={config.gravity} 
-                onChange={e => setConfig(prev => ({ ...prev, gravity: parseFloat(e.target.value) }))}
-                className="w-full accent-[#00a2ff] h-1"
-              />
-            </div>
           </div>
 
           <div className="absolute top-4 left-4 md:top-6 md:left-6 pointer-events-none">
@@ -1410,7 +1435,7 @@ export default function App() {
                   <ul className="list-disc list-inside space-y-1 md:space-y-2">
                     <li><b>Drag</b> the portals to relocate the wormhole.</li>
                     <li><b>Rotate</b> via the white handle to change the exit trajectory.</li>
-                    <li><b>Vacuum Mode</b> removes all atmosphere, allowing balls to gain infinite momentum in a vertical loop.</li>
+                    <li><b>Vacuum Mode</b> removes air damping only, allowing balls to preserve momentum in a vertical loop while gravity strength remains unchanged.</li>
                   </ul>
                 </section>
               </div>
