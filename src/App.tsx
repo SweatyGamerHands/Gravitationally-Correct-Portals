@@ -17,6 +17,8 @@ import {
   ChevronRight,
   HelpCircle
 } from 'lucide-react';
+import { computeGravityAt, getBaselineG } from './simulation/physics';
+import { Ball } from './simulation/Ball';
 import {
   computeGravityAt,
   getBaselineG,
