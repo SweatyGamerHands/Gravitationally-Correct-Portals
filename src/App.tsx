@@ -26,6 +26,14 @@ import {
   transformThroughPortal,
 } from './simulation/physics';
 import { withPortalVectors, type Point, type Portal } from './simulation/types';
+  TELEPORT_COOLDOWN_DISTANCE,
+  computeGravityAt,
+  getBaselineG,
+  getCrossingIntersection,
+  getPortalLocal,
+  getPortalSegmentCollision,
+  isWithinPortalAperture,
+} from './simulation/physics';
 import { computeGravityAt, getBaselineG, syncPinnedBallToPointer, type DragState } from './simulation/physics';
 import { withPortalVectors, type Portal } from './simulation/types';
 
@@ -108,7 +116,7 @@ class Ball {
     this.x = nextPosition.x;
     this.y = nextPosition.y;
 
-    if (this.cooldown > 0) this.cooldown--;
+    if (this.cooldown > 0) this.cooldown = Math.max(0, this.cooldown - Math.hypot(this.x - this.oldX, this.y - this.oldY));
     
     if (Math.random() > 0.8) {
       this.trail.push({ x: this.x, y: this.y });
@@ -121,29 +129,24 @@ class Ball {
         const p1 = portals[i];
         const p2 = portals[(i+1)%2];
         
-        const dotPrev = (this.oldX - p1.x) * p1.normal.x + (this.oldY - p1.y) * p1.normal.y;
-        const dotCurr = (this.x - p1.x) * p1.normal.x + (this.y - p1.y) * p1.normal.y;
-        
-        if (Math.sign(dotPrev) !== Math.sign(dotCurr)) {
-            const t = Math.abs(dotPrev) / (Math.abs(dotPrev) + Math.abs(dotCurr));
-            const interX = this.oldX + (this.x - this.oldX) * t;
-            const interY = this.oldY + (this.y - this.oldY) * t;
-            const distAlong = (interX - p1.x) * p1.dir.x + (interY - p1.y) * p1.dir.y;
-            
-            // Check if crossing happens strictly WITHIN the visible aperture geometry
-            if (Math.abs(distAlong) <= p1.width / 2) {
-                const fromFront = dotPrev > 0;
-                if (this.cooldown > 0) continue;
+        const crossing = getCrossingIntersection(
+          { x: this.oldX, y: this.oldY },
+          { x: this.x, y: this.y },
+          p1,
+          this.radius
+        );
+        if (!crossing) continue;
 
-                if (twoSided || fromFront) {
-                    this.teleport(p1, p2, interX, interY);
-                    return;
-                } else {
-                    // One-sided portal crossing: Blocked-face Impact (Rebound)
-                    this.blockedFaceImpact(p1, dotPrev);
-                    return;
-                }
-            }
+        const fromFront = crossing.dotPrev > 0;
+        if (this.cooldown > 0) continue;
+
+        if (twoSided || fromFront) {
+            this.teleport(p1, p2, crossing.interX, crossing.interY);
+            return;
+        } else {
+            // One-sided portal crossing: Blocked-face Impact (Rebound)
+            this.blockedFaceImpact(p1, crossing.dotPrev);
+            return;
         }
     }
   }
@@ -180,18 +183,30 @@ class Ball {
             }
             this.oldX = this.x;
             this.oldY = this.y;
+        const edgeHit = getPortalSegmentCollision({ x: this.x, y: this.y }, this.radius, p1);
+        if (edgeHit) {
+          const { normal, overlap } = edgeHit;
+          this.x += normal.x * overlap;
+          this.y += normal.y * overlap;
+          const vx = this.x - this.oldX;
+          const vy = this.y - this.oldY;
+          const dot = vx * normal.x + vy * normal.y;
+          if (dot < 0) {
+            const rx = vx - 2 * dot * normal.x;
+            const ry = vy - 2 * dot * normal.y;
+            this.oldX = this.x - rx * bounce;
+            this.oldY = this.y - ry * bounce;
+          } else {
+            this.oldX += normal.x * overlap;
+            this.oldY += normal.y * overlap;
           }
         }
 
         if (!twoSided) {
-          const dx = this.x - p1.x; const dy = this.y - p1.y;
-          const distNormal = dx * p1.normal.x + dy * p1.normal.y;
-          // Persistent Support: If ball is on back side and within support threshold
-          if (distNormal < 0 && distNormal > -(this.radius + 1.4)) {
-            const distAlong = dx * p1.dir.x + dy * p1.dir.y;
-            if (Math.abs(distAlong) <= p1.width / 2) {
-              this.blockedFaceSupport(p1);
-            }
+          const local = getPortalLocal({ x: this.x, y: this.y }, p1);
+          // Persistent Support: If ball is on back side and physically overlaps the aperture
+          if (local.normal < 0 && local.normal > -(this.radius + 1.4) && isWithinPortalAperture(local, p1, this.radius)) {
+            this.blockedFaceSupport(p1);
           }
         }
     }
@@ -252,8 +267,9 @@ class Ball {
     const resY = this.y - interY;
 
     // 2. Mapped crossing coordinate onto the Exit Portal plane
-    const dLocInter = (interX - entry.x) * entry.dir.x + (interY - entry.y) * entry.dir.y;
-    const nLocInter = (interX - entry.x) * entry.normal.x + (interY - entry.y) * entry.normal.y;
+    const interLocal = getPortalLocal({ x: interX, y: interY }, entry);
+    const dLocInter = interLocal.along;
+    const nLocInter = interLocal.normal;
 
     const mappedInterX = exit.x + dLocInter * exit.dir.x - nLocInter * exit.normal.x;
     const mappedInterY = exit.y + dLocInter * exit.dir.y - nLocInter * exit.normal.y;
@@ -283,7 +299,7 @@ class Ball {
     this.oldX = this.x;
     this.oldY = this.y;
     
-    this.cooldown = 4;
+    this.cooldown = TELEPORT_COOLDOWN_DISTANCE;
     this.trail = []; 
   }
 
@@ -296,15 +312,12 @@ class Ball {
     let overlap: { entry: Portal; exit: Portal; d: number } | null = null;
     for (let i = 0; i < 2; i++) {
         const p = portals[i];
-        const distAlong = (this.x - p.x) * p.dir.x + (this.y - p.y) * p.dir.y;
-        if (Math.abs(distAlong) < p.width/2 + this.radius) {
-            const d = (this.x - p.x) * p.normal.x + (this.y - p.y) * p.normal.y;
-            if (Math.abs(d) < this.radius) {
-                // If one-sided, only allow dual rendering if the ball center is on the front face (d > 0)
-                if (twoSided || d >= 0) {
-                  overlap = { entry: p, exit: portals[(i + 1) % 2], d };
-                  break;
-                }
+        const local = getPortalLocal({ x: this.x, y: this.y }, p);
+        if (isWithinPortalAperture(local, p, this.radius) && Math.abs(local.normal) < this.radius) {
+            // If one-sided, only allow dual rendering if the ball center is on the front face (d > 0)
+            if (twoSided || local.normal >= 0) {
+              overlap = { entry: p, exit: portals[(i + 1) % 2], d: local.normal };
+              break;
             }
         }
     }
@@ -354,7 +367,7 @@ class Ball {
 
   renderDual(ctx: CanvasRenderingContext2D, entry: Portal, exit: Portal, nLoc: number, heat: number) {
     // Basis Vector Clone Placement
-    const dLoc = (this.x - entry.x) * entry.dir.x + (this.y - entry.y) * entry.dir.y;
+    const dLoc = getPortalLocal({ x: this.x, y: this.y }, entry).along;
     // Parameter 'nLoc' passed from overlap check is exactly the Normal distance
     const isFront = nLoc >= 0;
     

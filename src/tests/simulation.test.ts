@@ -8,6 +8,9 @@ import {
   integratePosition,
   integrateVelocity,
   simulateLinearDisplacement,
+  getPortalLocal,
+  getPortalSegmentCollision,
+  isWithinPortalAperture,
   transformThroughPortal,
 } from '../simulation/physics';
 import { computeGravityAt, getBaselineG, getCrossingIntersection, getPinnedBallIndex, syncPinnedBallToPointer, transformThroughPortal } from '../simulation/physics';
@@ -66,6 +69,76 @@ test('explicit velocity integration uses seconds for velocity and acceleration',
   assert.equal(nextVelocity.y, 4);
   assert.ok(Math.abs(nextPosition.x - 2) < 1e-9);
   assert.ok(Math.abs(nextPosition.y - 2 / 15) < 1e-9);
+test('crossing near positive aperture edge includes ball radius overlap', () => {
+  const portal = portals[0];
+  const radius = 10;
+  const edgeX = portal.x + portal.width / 2;
+
+  const overlappingEdge = getCrossingIntersection(
+    { x: edgeX + radius - 0.5, y: portal.y - 20 },
+    { x: edgeX + radius - 0.5, y: portal.y + 20 },
+    portal,
+    radius,
+  );
+  assert.ok(overlappingEdge);
+
+  const outsideEdge = getCrossingIntersection(
+    { x: edgeX + radius + 0.5, y: portal.y - 20 },
+    { x: edgeX + radius + 0.5, y: portal.y + 20 },
+    portal,
+    radius,
+  );
+  assert.equal(outsideEdge, null);
+});
+
+test('crossing near negative aperture edge includes ball radius overlap', () => {
+  const portal = portals[0];
+  const radius = 10;
+  const edgeX = portal.x - portal.width / 2;
+
+  const overlappingEdge = getCrossingIntersection(
+    { x: edgeX - radius + 0.5, y: portal.y - 20 },
+    { x: edgeX - radius + 0.5, y: portal.y + 20 },
+    portal,
+    radius,
+  );
+  assert.ok(overlappingEdge);
+
+  const outsideEdge = getCrossingIntersection(
+    { x: edgeX - radius - 0.5, y: portal.y - 20 },
+    { x: edgeX - radius - 0.5, y: portal.y + 20 },
+    portal,
+    radius,
+  );
+  assert.equal(outsideEdge, null);
+});
+
+test('grazing an aperture endcap collides with portal edge capsule', () => {
+  const portal = portals[0];
+  const radius = 10;
+  const edgeX = portal.x + portal.width / 2;
+
+  const grazingHit = getPortalSegmentCollision({ x: edgeX + radius + 0.5, y: portal.y }, radius, portal);
+  assert.ok(grazingHit);
+  assert.ok(grazingHit.overlap > 0);
+  assert.ok(grazingHit.normal.x > 0);
+
+  const clearMiss = getPortalSegmentCollision({ x: edgeX + radius + 2, y: portal.y }, radius, portal);
+  assert.equal(clearMiss, null);
+});
+
+test('back-face approach just outside aperture is not eligible for aperture support or crossing', () => {
+  const portal = portals[0];
+  const radius = 10;
+  const outsideX = portal.x + portal.width / 2 + radius + 0.5;
+  const backFacePoint = { x: outsideX, y: portal.y - radius / 2 };
+  const local = getPortalLocal(backFacePoint, portal);
+
+  assert.equal(isWithinPortalAperture(local, portal, radius), false);
+  assert.equal(
+    getCrossingIntersection(backFacePoint, { x: outsideX, y: portal.y + radius / 2 }, portal, radius),
+    null,
+  );
 test('dragged ball index is parsed only for active ball drags', () => {
   assert.equal(getPinnedBallIndex({ id: '2', type: 'ball' }), 2);
   assert.equal(getPinnedBallIndex({ id: '2', type: 'portal' }), -1);
