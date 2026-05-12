@@ -1,6 +1,7 @@
 import type { Point, Portal } from './types';
 
 export const BASE_G = 800;
+const PORTAL_EDGE_FALLOFF_RATIO = 0.2;
 
 export const MAX_FRAME_DT = 1 / 30;
 
@@ -100,6 +101,20 @@ export const getPortalSegmentCollision = (point: Point, radius: number, portal: 
   };
 };
 
+const smoothstep = (t: number) => t * t * (3 - 2 * t);
+
+const getApertureEdgeWeight = (distAlong: number, width: number) => {
+  const halfWidth = width / 2;
+  const falloffBand = Math.max(width * PORTAL_EDGE_FALLOFF_RATIO, 1);
+  const edgeDistance = Math.abs(distAlong) - halfWidth;
+
+  if (edgeDistance <= -falloffBand) return 1;
+  if (edgeDistance >= falloffBand) return 0;
+
+  const bandT = (edgeDistance + falloffBand) / (falloffBand * 2);
+  return 1 - smoothstep(bandT);
+};
+
 export const transformThroughPortal = (vector: Point, entry: Portal, exit: Portal): Point => {
   const along = vector.x * entry.dir.x + vector.y * entry.dir.y;
   const normal = vector.x * entry.normal.x + vector.y * entry.normal.y;
@@ -161,7 +176,11 @@ export const computeGravityAt = (
     const exit = portals[(i + 1) % 2];
     const local = getPortalLocal({ x, y }, entry);
     const influenceRange = entry.width * 1.25;
+    const edgeWeight = getApertureEdgeWeight(distAlong, entry.width);
 
+    if (distNormal > 0 && distNormal < influenceRange && edgeWeight > 0) {
+      const leaked = transformThroughPortal(ambient, exit, entry);
+      const distWeight = Math.pow(1 - distNormal / influenceRange, 1.5);
     if (local.normal > 0 && local.normal < influenceRange && isWithinPortalAperture(local, entry)) {
       const leaked = transformThroughPortal(ambient, exit, entry);
       const distWeight = Math.pow(1 - local.normal / influenceRange, 1.5);

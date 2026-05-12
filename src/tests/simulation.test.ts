@@ -42,6 +42,23 @@ test('gravity compute returns ambient when correction disabled', () => {
   assert.equal(g.y, 800);
 });
 
+test('gravity compute changes continuously across aperture edge falloff', () => {
+  const edgePortals = [
+    withPortalVectors({ id: 'entry', x: 100, y: 100, angle: 0, color: '#f90', width: 100 }),
+    withPortalVectors({ id: 'exit', x: 300, y: 100, angle: Math.PI / 2, color: '#09f', width: 100 }),
+  ];
+  const config = { vacuum: false, gravity: 1, correctGravity: true, portalPull: 1 };
+  const halfWidth = edgePortals[0].width / 2;
+  const epsilon = 0.001;
+  const inside = computeGravityAt(100 + halfWidth - epsilon, 120, edgePortals, config);
+  const outside = computeGravityAt(100 + halfWidth + epsilon, 120, edgePortals, config);
+  const delta = Math.hypot(outside.x - inside.x, outside.y - inside.y);
+
+  assert.ok(delta < 1, `expected no gravity jump at aperture edge, got ${delta}`);
+  assert.notEqual(inside.x, 0);
+  assert.notEqual(outside.x, 0);
+});
+
 
 test('scaled frame dt applies timeScale linearly', () => {
   assert.equal(getScaledFrameDt(1 / 60, 0.5), 1 / 120);
