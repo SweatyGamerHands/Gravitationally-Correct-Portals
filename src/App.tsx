@@ -405,7 +405,8 @@ class Ball {
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [objects, setObjects] = useState<Ball[]>([]);
+  const objectsRef = useRef<Ball[]>([]);
+  const [entityCount, setEntityCount] = useState(0);
   const [portals, setPortals] = useState<Portal[]>([]);
   const [fps, setFps] = useState(0);
   const [config, setConfig] = useState({
@@ -455,7 +456,16 @@ export default function App() {
         const canvas = canvasRef.current;
         if (!canvas) return;
 
+        if (width <= 0 || height <= 0) continue;
+
         const previousSize = canvasSizeRef.current;
+        const hasPreviousSize = previousSize.width > 0 && previousSize.height > 0;
+        const scaleX = hasPreviousSize ? width / previousSize.width : 1;
+        const scaleY = hasPreviousSize ? height / previousSize.height : 1;
+        const isNoOpScale = Math.abs(scaleX - 1) < 1e-6 && Math.abs(scaleY - 1) < 1e-6;
+
+        if (initializedRef.current && hasPreviousSize && isNoOpScale) continue;
+
         canvas.width = width;
         canvas.height = height;
 
@@ -468,26 +478,27 @@ export default function App() {
           ];
 
           setPortals(initialPortals.map(withPortalVectors));
-          setObjects([new Ball(width / 2, 100, 15, 20)]);
+          if (objectsRef.current.length === 0) {
+            objectsRef.current = [new Ball(width / 2, 100, 15, 20)];
+            setEntityCount(objectsRef.current.length);
+          }
           initializedRef.current = true;
-        } else if (previousSize.width > 0 && previousSize.height > 0) {
-          const scaleX = width / previousSize.width;
-          const scaleY = height / previousSize.height;
-
+        } else if (hasPreviousSize) {
           setPortals(prev => prev.map(portal => withPortalVectors({
             ...portal,
             x: portal.x * scaleX,
             y: portal.y * scaleY,
           })));
 
-          setObjects(prev => prev.map(obj => {
-            obj.x *= scaleX;
-            obj.y *= scaleY;
-            obj.oldX *= scaleX;
-            obj.oldY *= scaleY;
-            obj.trail = obj.trail.map(point => ({ x: point.x * scaleX, y: point.y * scaleY }));
-            return obj;
-          }));
+          if (dragStateRef.current.type !== 'ball') {
+            objectsRef.current.forEach(obj => {
+              obj.x *= scaleX;
+              obj.y *= scaleY;
+              obj.oldX *= scaleX;
+              obj.oldY *= scaleY;
+              obj.trail = obj.trail.map(point => ({ x: point.x * scaleX, y: point.y * scaleY }));
+            });
+          }
 
           lastPos.current = { x: lastPos.current.x * scaleX, y: lastPos.current.y * scaleY };
         }
@@ -725,6 +736,7 @@ export default function App() {
         drawFlow(ctx, w, h, portals);
       }
 
+      const objects = objectsRef.current;
       const friction = config.vacuum ? 1.0 : config.friction;
       const bounce = config.elasticity;
       
@@ -827,7 +839,7 @@ export default function App() {
 
     animationId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animationId);
-  }, [objects, portals, config, drawGrid, drawFlow, getGravityAt, resolveCollisions]);
+  }, [portals, config, drawGrid, drawFlow, getGravityAt, resolveCollisions]);
 
   const handleStart = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.preventDefault();
@@ -850,6 +862,7 @@ export default function App() {
         return;
       }
     }
+    const objects = objectsRef.current;
     for (let i = objects.length - 1; i >= 0; i--) {
       const obj = objects[i];
       if (Math.hypot(obj.x - p.x, obj.y - p.y) < obj.radius + 20) {
@@ -944,12 +957,19 @@ export default function App() {
 
   const addBall = () => {
     const w = canvasRef.current?.width || 800;
-    setObjects(prev => [...prev, new Ball(w / 2, 100, config.size, config.mass)]);
+    objectsRef.current.push(new Ball(w / 2, 100, config.size, config.mass));
+    setEntityCount(objectsRef.current.length);
   };
 
   const reset = () => {
     const w = canvasRef.current?.width || 800;
-    setObjects([new Ball(w / 2, 100, config.size, config.mass)]);
+    objectsRef.current = [new Ball(w / 2, 100, config.size, config.mass)];
+    setEntityCount(objectsRef.current.length);
+  };
+
+  const flushBuffer = () => {
+    objectsRef.current = [];
+    setEntityCount(objectsRef.current.length);
   };
 
   const toggleLayout = () => {
@@ -1017,7 +1037,7 @@ export default function App() {
                 <div className="text-[9px] uppercase text-white/40">Frame Stability</div>
               </div>
               <div className="text-right">
-                <div className="text-lg md:text-xl font-mono text-[#00a2ff]">{objects.length}</div>
+                <div className="text-lg md:text-xl font-mono text-[#00a2ff]">{entityCount}</div>
                 <div className="text-[9px] uppercase text-white/40">Entities</div>
               </div>
             </div>
@@ -1351,7 +1371,7 @@ export default function App() {
 
           <div className="pt-4 flex justify-between items-center mt-auto">
             <button 
-              onClick={() => setObjects([])}
+              onClick={flushBuffer}
               className="text-[9px] uppercase font-bold text-red-500/50 hover:text-red-500 transition-colors tracking-widest"
             >
               Flush Buffer
