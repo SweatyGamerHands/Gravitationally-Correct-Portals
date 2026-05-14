@@ -453,7 +453,22 @@ export default function App() {
     portalsRef.current = portals;
   }, [portals]);
 
-  // Initialize Portals once; subsequent resize events only resize/scale the existing scene.
+  const initializeScene = useCallback((width: number, height: number) => {
+    initializedRef.current = true;
+
+    const cx = width / 2;
+    const cy = height / 2;
+    const initialPortals: Portal[] = [
+      { id: 'orange', x: cx - width * 0.15, y: cy + height * 0.1, angle: -0.6, color: '#ff9d00', width: initialPortalWidthRef.current, dir: {x:0,y:0}, normal: {x:0,y:0}, handle: {x:0,y:0} },
+      { id: 'blue', x: cx + width * 0.15, y: cy - height * 0.1, angle: 2.5, color: '#00a2ff', width: initialPortalWidthRef.current, dir: {x:0,y:0}, normal: {x:0,y:0}, handle: {x:0,y:0} }
+    ];
+
+    objectsRef.current = [new Ball(width / 2, 100, 15, 20)];
+    setPortals(initialPortals.map(withPortalVectors));
+    setEntityCount(objectsRef.current.length);
+  }, []);
+
+  // Resize the canvas and existing scene; initialization is delegated to initializeScene.
   useEffect(() => {
     if (!containerRef.current || !canvasRef.current) return;
 
@@ -469,28 +484,13 @@ export default function App() {
         const hasPreviousSize = previousSize.width > 0 && previousSize.height > 0;
         const scaleX = hasPreviousSize ? width / previousSize.width : 1;
         const scaleY = hasPreviousSize ? height / previousSize.height : 1;
-        const isNoOpScale = Math.abs(scaleX - 1) < 1e-6 && Math.abs(scaleY - 1) < 1e-6;
-
-        if (initializedRef.current && hasPreviousSize && isNoOpScale) continue;
+        const isRealSizeChange = !hasPreviousSize || Math.abs(scaleX - 1) >= 1e-6 || Math.abs(scaleY - 1) >= 1e-6;
 
         canvas.width = width;
         canvas.height = height;
+        canvasSizeRef.current = { width, height };
 
-        if (!initializedRef.current) {
-          const cx = width / 2;
-          const cy = height / 2;
-          const initialPortals: Portal[] = [
-            { id: 'orange', x: cx - width * 0.15, y: cy + height * 0.1, angle: -0.6, color: '#ff9d00', width: initialPortalWidthRef.current, dir: {x:0,y:0}, normal: {x:0,y:0}, handle: {x:0,y:0} },
-            { id: 'blue', x: cx + width * 0.15, y: cy - height * 0.1, angle: 2.5, color: '#00a2ff', width: initialPortalWidthRef.current, dir: {x:0,y:0}, normal: {x:0,y:0}, handle: {x:0,y:0} }
-          ];
-
-          setPortals(initialPortals.map(withPortalVectors));
-          if (objectsRef.current.length === 0) {
-            objectsRef.current = [new Ball(width / 2, 100, 15, 20)];
-            setEntityCount(objectsRef.current.length);
-          }
-          initializedRef.current = true;
-        } else if (hasPreviousSize) {
+        if (initializedRef.current && hasPreviousSize && isRealSizeChange) {
           setPortals(prev => prev.map(portal => withPortalVectors({
             ...portal,
             x: portal.x * scaleX,
@@ -510,13 +510,21 @@ export default function App() {
           lastPos.current = { x: lastPos.current.x * scaleX, y: lastPos.current.y * scaleY };
         }
 
-        canvasSizeRef.current = { width, height };
+        if (
+          !initializedRef.current &&
+          width > 0 &&
+          height > 0 &&
+          objectsRef.current.length === 0
+        ) {
+          if (dragStateRef.current.type !== null) return;
+          initializeScene(width, height);
+        }
       }
     });
 
     resizeObserver.observe(containerRef.current);
     return () => resizeObserver.disconnect();
-  }, []);
+  }, [initializeScene]);
 
   const getGravityAt = useCallback((x: number, y: number, currentPortals: Portal[]) => {
     return computeGravityAt(x, y, currentPortals, configRef.current);
