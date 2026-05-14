@@ -6,38 +6,32 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
-  Settings2, 
-  Trash2, 
-  Plus, 
-  Layout, 
-  Info, 
-  Wind, 
-  Zap, 
+  Settings2,
+  Trash2,
+  Plus,
+  Layout,
+  Info,
+  Wind,
+  Zap,
   Maximize2,
   ChevronRight,
-  HelpCircle
 } from 'lucide-react';
-import { computeGravityAt, getBaselineG } from './simulation/physics';
-import { Ball } from './simulation/Ball';
 import {
-  computeGravityAt,
-  getBaselineG,
-  getScaledFrameDt,
-  integratePosition,
-  integrateVelocity,
-  transformThroughPortal,
-} from './simulation/physics';
-import { withPortalVectors, type Point, type Portal } from './simulation/types';
   TELEPORT_COOLDOWN_DISTANCE,
   computeGravityAt,
   getBaselineG,
   getCrossingIntersection,
   getPortalLocal,
   getPortalSegmentCollision,
+  getScaledFrameDt,
+  integratePosition,
+  integrateVelocity,
   isWithinPortalAperture,
+  syncPinnedBallToPointer,
+  transformThroughPortal,
+  type DragState,
 } from './simulation/physics';
-import { computeGravityAt, getBaselineG, syncPinnedBallToPointer, type DragState } from './simulation/physics';
-import { withPortalVectors, type Portal } from './simulation/types';
+import { withPortalVectors, type Point, type Portal } from './simulation/types';
 
 // --- Constants & Types ---
 const DEFAULT_SUBSTEPS = 12; 
@@ -187,6 +181,9 @@ class Ball {
             }
             this.oldX = this.x;
             this.oldY = this.y;
+          }
+        }
+
         const edgeHit = getPortalSegmentCollision({ x: this.x, y: this.y }, this.radius, p1);
         if (edgeHit) {
           const { normal, overlap } = edgeHit;
@@ -430,6 +427,8 @@ export default function App() {
     portalPull: 1.0,
     twoSided: false
   });
+  const configRef = useRef(config);
+  const portalsRef = useRef(portals);
   
   const [layoutIdx, setLayoutIdx] = useState(2);
   
@@ -445,6 +444,14 @@ export default function App() {
   const initializedRef = useRef(false);
   const canvasSizeRef = useRef({ width: 0, height: 0 });
   const initialPortalWidthRef = useRef(config.portalWidth);
+
+  useEffect(() => {
+    configRef.current = config;
+  }, [config]);
+
+  useEffect(() => {
+    portalsRef.current = portals;
+  }, [portals]);
 
   // Initialize Portals once; subsequent resize events only resize/scale the existing scene.
   useEffect(() => {
@@ -512,10 +519,12 @@ export default function App() {
   }, []);
 
   const getGravityAt = useCallback((x: number, y: number, currentPortals: Portal[]) => {
-    return computeGravityAt(x, y, currentPortals, config);
-  }, [config.gravity, config.correctGravity, config.vacuum, config.portalPull]);
+    return computeGravityAt(x, y, currentPortals, configRef.current);
+  }, []);
 
   const drawGrid = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number, currentPortals: Portal[]) => {
+    const config = configRef.current;
+
     ctx.strokeStyle = 'rgba(0, 162, 255, 0.08)';
     ctx.lineWidth = 1;
     const stepX = w / GRID_RES;
@@ -579,9 +588,10 @@ export default function App() {
       }
       drawWarpedPolyline(points, stepX);
     }
-  }, [getGravityAt, config.gridIntensity, config.vacuum, config.gravity]);
+  }, [getGravityAt]);
   
   const drawFlow = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number, currentPortals: Portal[]) => {
+    const config = configRef.current;
     const res = config.flowDensity;
     const stepX = w / res;
     const stepY = h / res;
@@ -642,7 +652,7 @@ export default function App() {
         ctx.stroke();
       }
     }
-  }, [getGravityAt, config.flowDensity, config.flowScale, config.vacuum, config.gravity]);
+  }, [getGravityAt]);
 
   const resolveCollisions = useCallback((balls: Ball[], bounce: number, pinnedIdx: number = -1) => {
     for (let i = 0; i < balls.length; i++) {
@@ -714,6 +724,10 @@ export default function App() {
     let animationId: number;
 
     const render = (time: number) => {
+      const config = configRef.current;
+      const portals = portalsRef.current;
+      const objects = objectsRef.current;
+
       // FPS calculation
       frameCount.current++;
       if (time - lastTime.current >= 1000) {
@@ -736,7 +750,6 @@ export default function App() {
         drawFlow(ctx, w, h, portals);
       }
 
-      const objects = objectsRef.current;
       const friction = config.vacuum ? 1.0 : config.friction;
       const bounce = config.elasticity;
       
@@ -748,7 +761,7 @@ export default function App() {
 
       // Update pinned ball position BEFORE substeps so collisions reflect actual pointer location this frame
       // Release velocity is pointer delta over elapsed simulation time, not raw frame displacement.
-      const pinnedIdx = syncPinnedBallToPointer(objects, dragStateRef.current, lastPos.current, frameDt);
+      const pinnedIdx = syncPinnedBallToPointer(objectsRef.current, dragStateRef.current, lastPos.current, frameDt);
 
       for (let s = 0; s < config.substeps; s++) {
         objects.forEach((obj, index) => {
@@ -839,7 +852,7 @@ export default function App() {
 
     animationId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animationId);
-  }, [portals, config, drawGrid, drawFlow, getGravityAt, resolveCollisions]);
+  }, [drawGrid, drawFlow, getGravityAt, resolveCollisions]);
 
   const handleStart = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.preventDefault();
