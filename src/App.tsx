@@ -463,9 +463,12 @@ export default function App() {
       { id: 'blue', x: cx + width * 0.15, y: cy - height * 0.1, angle: 2.5, color: '#00a2ff', width: initialPortalWidthRef.current, dir: {x:0,y:0}, normal: {x:0,y:0}, handle: {x:0,y:0} }
     ];
 
-    objectsRef.current = [new Ball(width / 2, 100, 15, 20)];
+    if (objectsRef.current.length === 0) {
+      objectsRef.current = [new Ball(width / 2, 100, 15, 20)];
+      setEntityCount(objectsRef.current.length);
+    }
+
     setPortals(initialPortals.map(withPortalVectors));
-    setEntityCount(objectsRef.current.length);
   }, []);
 
   // Resize the canvas and existing scene; initialization is delegated to initializeScene.
@@ -769,7 +772,7 @@ export default function App() {
 
       // Update pinned ball position BEFORE substeps so collisions reflect actual pointer location this frame
       // Release velocity is pointer delta over elapsed simulation time, not raw frame displacement.
-      const pinnedIdx = syncPinnedBallToPointer(objectsRef.current, dragStateRef.current, lastPos.current, frameDt);
+      const pinnedIdx = syncPinnedBallToPointer(objects, dragStateRef.current, lastPos.current, frameDt);
 
       for (let s = 0; s < config.substeps; s++) {
         objects.forEach((obj, index) => {
