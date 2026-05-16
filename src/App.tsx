@@ -454,6 +454,7 @@ export default function App() {
   }, [portals]);
 
   const initializeScene = useCallback((width: number, height: number) => {
+    // Mark initialization synchronously before mutating refs or scheduling React state.
     initializedRef.current = true;
 
     const cx = width / 2;
@@ -463,15 +464,21 @@ export default function App() {
       { id: 'blue', x: cx + width * 0.15, y: cy - height * 0.1, angle: 2.5, color: '#00a2ff', width: initialPortalWidthRef.current, dir: {x:0,y:0}, normal: {x:0,y:0}, handle: {x:0,y:0} }
     ];
 
-    if (objectsRef.current.length === 0) {
-      objectsRef.current = [new Ball(width / 2, 100, 15, 20)];
-      setEntityCount(objectsRef.current.length);
-    }
-
+    objectsRef.current = [new Ball(width / 2, 100, 15, 20)];
+    setEntityCount(objectsRef.current.length);
     setPortals(initialPortals.map(withPortalVectors));
   }, []);
 
-  // Resize the canvas and existing scene; initialization is delegated to initializeScene.
+  const isReadyForInitialScene = useCallback((width: number, height: number) => {
+    return (
+      !initializedRef.current &&
+      width > 0 &&
+      height > 0 &&
+      objectsRef.current.length === 0
+    );
+  }, []);
+
+  // ResizeObserver owns canvas sizing and proportional scene scaling only.
   useEffect(() => {
     if (!containerRef.current || !canvasRef.current) return;
 
@@ -513,12 +520,7 @@ export default function App() {
           lastPos.current = { x: lastPos.current.x * scaleX, y: lastPos.current.y * scaleY };
         }
 
-        if (
-          !initializedRef.current &&
-          width > 0 &&
-          height > 0 &&
-          objectsRef.current.length === 0
-        ) {
+        if (isReadyForInitialScene(width, height)) {
           if (dragStateRef.current.type !== null) return;
           initializeScene(width, height);
         }
@@ -527,7 +529,7 @@ export default function App() {
 
     resizeObserver.observe(containerRef.current);
     return () => resizeObserver.disconnect();
-  }, [initializeScene]);
+  }, [initializeScene, isReadyForInitialScene]);
 
   const getGravityAt = useCallback((x: number, y: number, currentPortals: Portal[]) => {
     return computeGravityAt(x, y, currentPortals, configRef.current);
