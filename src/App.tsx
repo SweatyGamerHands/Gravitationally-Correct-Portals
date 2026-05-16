@@ -772,7 +772,7 @@ export default function App() {
 
       // Update pinned ball position BEFORE substeps so collisions reflect actual pointer location this frame
       // Release velocity is pointer delta over elapsed simulation time, not raw frame displacement.
-      const pinnedIdx = syncPinnedBallToPointer(objects, dragStateRef.current, lastPos.current, frameDt);
+      const pinnedIdx = syncPinnedBallToPointer(objectsRef.current, dragStateRef.current, lastPos.current, frameDt);
 
       for (let s = 0; s < config.substeps; s++) {
         objects.forEach((obj, index) => {
@@ -863,7 +863,7 @@ export default function App() {
 
     animationId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animationId);
-  }, [drawGrid, drawFlow, getGravityAt, resolveCollisions]);
+  }, []);
 
   const handleStart = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.preventDefault();
