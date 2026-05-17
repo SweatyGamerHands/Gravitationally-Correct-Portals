@@ -882,17 +882,19 @@ export default function App() {
         return;
       }
     }
-    for (const pt of portals) {
-      if (Math.hypot(pt.x - p.x, pt.y - p.y) < 50) {
-        updateDragState({ id: pt.id, type: 'portal' });
-        return;
-      }
-    }
+
     const objects = objectsRef.current;
     for (let i = objects.length - 1; i >= 0; i--) {
       const obj = objects[i];
       if (Math.hypot(obj.x - p.x, obj.y - p.y) < obj.radius + 20) {
         updateDragState({ id: String(i), type: 'ball' });
+        return;
+      }
+    }
+
+    for (const pt of portals) {
+      if (Math.hypot(pt.x - p.x, pt.y - p.y) < 50) {
+        updateDragState({ id: pt.id, type: 'portal' });
         return;
       }
     }
