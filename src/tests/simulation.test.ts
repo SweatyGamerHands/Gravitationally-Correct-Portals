@@ -4,16 +4,17 @@ import {
   computeGravityAt,
   getBaselineG,
   getCrossingIntersection,
+  getPinnedBallIndex,
+  getPortalLocal,
+  getPortalSegmentCollision,
   getScaledFrameDt,
   integratePosition,
   integrateVelocity,
-  simulateLinearDisplacement,
-  getPortalLocal,
-  getPortalSegmentCollision,
   isWithinPortalAperture,
+  simulateLinearDisplacement,
+  syncPinnedBallToPointer,
   transformThroughPortal,
 } from '../simulation/physics';
-import { computeGravityAt, getBaselineG, getCrossingIntersection, getPinnedBallIndex, syncPinnedBallToPointer, transformThroughPortal } from '../simulation/physics';
 import { withPortalVectors } from '../simulation/types';
 import { Ball } from '../simulation/Ball';
 
@@ -29,7 +30,8 @@ test('baseline gravity ignores vacuum mode', () => {
 
 test('portal transform flips normal component', () => {
   const v = transformThroughPortal({ x: 0, y: 10 }, portals[0], portals[1]);
-  assert.ok(Number.isFinite(v.x) && Number.isFinite(v.y));
+  assert.ok(Math.abs(v.x) < 1e-9);
+  assert.ok(Math.abs(v.y - 10) < 1e-9);
 });
 
 test('crossing detected within aperture', () => {
@@ -60,10 +62,11 @@ test('gravity compute changes continuously across aperture edge falloff', () => 
   assert.notEqual(outside.x, 0);
 });
 
-
-test('scaled frame dt applies timeScale linearly', () => {
+test('scaled frame dt applies timeScale linearly and clamps real dt before scaling', () => {
   assert.equal(getScaledFrameDt(1 / 60, 0.5), 1 / 120);
   assert.equal(getScaledFrameDt(1 / 60, 2), 1 / 30);
+  assert.equal(getScaledFrameDt(1, 2), 1 / 15);
+  assert.equal(getScaledFrameDt(-1, 1), 0);
 });
 
 test('timeScale controls displacement predictably over equal real time', () => {
@@ -87,48 +90,30 @@ test('explicit velocity integration uses seconds for velocity and acceleration',
   assert.equal(nextVelocity.y, 4);
   assert.ok(Math.abs(nextPosition.x - 2) < 1e-9);
   assert.ok(Math.abs(nextPosition.y - 2 / 15) < 1e-9);
-test('crossing near positive aperture edge includes ball radius overlap', () => {
-  const portal = portals[0];
-  const radius = 10;
-  const edgeX = portal.x + portal.width / 2;
-
-  const overlappingEdge = getCrossingIntersection(
-    { x: edgeX + radius - 0.5, y: portal.y - 20 },
-    { x: edgeX + radius - 0.5, y: portal.y + 20 },
-    portal,
-    radius,
-  );
-  assert.ok(overlappingEdge);
-
-  const outsideEdge = getCrossingIntersection(
-    { x: edgeX + radius + 0.5, y: portal.y - 20 },
-    { x: edgeX + radius + 0.5, y: portal.y + 20 },
-    portal,
-    radius,
-  );
-  assert.equal(outsideEdge, null);
 });
 
-test('crossing near negative aperture edge includes ball radius overlap', () => {
+test('crossing near aperture edge includes ball radius overlap but rejects clear misses', () => {
   const portal = portals[0];
   const radius = 10;
-  const edgeX = portal.x - portal.width / 2;
 
-  const overlappingEdge = getCrossingIntersection(
-    { x: edgeX - radius + 0.5, y: portal.y - 20 },
-    { x: edgeX - radius + 0.5, y: portal.y + 20 },
-    portal,
-    radius,
-  );
-  assert.ok(overlappingEdge);
+  for (const side of [1, -1]) {
+    const edgeX = portal.x + side * portal.width / 2;
+    const overlappingEdge = getCrossingIntersection(
+      { x: edgeX + side * (radius - 0.5), y: portal.y - 20 },
+      { x: edgeX + side * (radius - 0.5), y: portal.y + 20 },
+      portal,
+      radius,
+    );
+    assert.ok(overlappingEdge);
 
-  const outsideEdge = getCrossingIntersection(
-    { x: edgeX - radius - 0.5, y: portal.y - 20 },
-    { x: edgeX - radius - 0.5, y: portal.y + 20 },
-    portal,
-    radius,
-  );
-  assert.equal(outsideEdge, null);
+    const outsideEdge = getCrossingIntersection(
+      { x: edgeX + side * (radius + 0.5), y: portal.y - 20 },
+      { x: edgeX + side * (radius + 0.5), y: portal.y + 20 },
+      portal,
+      radius,
+    );
+    assert.equal(outsideEdge, null);
+  }
 });
 
 test('grazing an aperture endcap collides with portal edge capsule', () => {
@@ -145,14 +130,21 @@ test('grazing an aperture endcap collides with portal edge capsule', () => {
   assert.equal(clearMiss, null);
 });
 
-test('back-face approach just outside aperture is not eligible for aperture support or crossing', () => {
+test('back-face approach outside aperture is not eligible for support or crossing', () => {
   const portal = portals[0];
   const radius = 10;
   const outsideX = portal.x + portal.width / 2 + radius + 0.5;
   const backFacePoint = { x: outsideX, y: portal.y - radius / 2 };
   const local = getPortalLocal(backFacePoint, portal);
 
-test('blocked back support does not stop horizontal velocity before penetration on a vertical portal', () => {
+  assert.equal(isWithinPortalAperture(local, portal, radius), false);
+  assert.equal(
+    getCrossingIntersection(backFacePoint, { x: outsideX, y: portal.y + radius / 2 }, portal, radius),
+    null,
+  );
+});
+
+test('blocked back support does not stop tangential velocity before penetration', () => {
   const portal = withPortalVectors({ id: 'vertical', x: 100, y: 100, angle: Math.PI / 2, color: '#f90', width: 100 });
   const ball = new Ball(111.3, 100, 10, 1);
   ball.oldX = 113.3;
@@ -166,7 +158,7 @@ test('blocked back support does not stop horizontal velocity before penetration 
   assert.equal(ball.y - ball.oldY, 0);
 });
 
-test('blocked back support preserves horizontal separating velocity on a vertical portal', () => {
+test('blocked back support preserves separating tangential velocity on penetration', () => {
   const portal = withPortalVectors({ id: 'vertical', x: 100, y: 100, angle: Math.PI / 2, color: '#f90', width: 100 });
   const ball = new Ball(110, 100, 10, 1);
   ball.oldX = 105;
@@ -178,11 +170,8 @@ test('blocked back support preserves horizontal separating velocity on a vertica
   assert.equal(ball.y, 100);
   assert.equal(ball.x - ball.oldX, 5);
   assert.equal(ball.y - ball.oldY, 0);
-  assert.equal(isWithinPortalAperture(local, portal, radius), false);
-  assert.equal(
-    getCrossingIntersection(backFacePoint, { x: outsideX, y: portal.y + radius / 2 }, portal, radius),
-    null,
-  );
+});
+
 test('dragged ball index is parsed only for active ball drags', () => {
   assert.equal(getPinnedBallIndex({ id: '2', type: 'ball' }), 2);
   assert.equal(getPinnedBallIndex({ id: '2', type: 'portal' }), -1);
@@ -191,7 +180,7 @@ test('dragged ball index is parsed only for active ball drags', () => {
   assert.equal(getPinnedBallIndex({ id: '1abc', type: 'ball' }), -1);
 });
 
-test('dragged ball sync pins ball to pointer while preserving previous position as velocity state', () => {
+test('dragged ball sync pins ball to pointer while preserving velocity state', () => {
   const bodies = [
     { x: 10, y: 15, oldX: 8, oldY: 12 },
     { x: 30, y: 35, oldX: 29, oldY: 34 },
@@ -202,6 +191,15 @@ test('dragged ball sync pins ball to pointer while preserving previous position 
   assert.equal(pinnedIdx, 1);
   assert.deepEqual(bodies[0], { x: 10, y: 15, oldX: 8, oldY: 12 });
   assert.deepEqual(bodies[1], { x: 100, y: 120, oldX: 30, oldY: 35 });
+});
+
+test('dragged ball sync computes explicit velocity for velocity-based bodies', () => {
+  const bodies = [{ x: 30, y: 35, oldX: 29, oldY: 34, vx: 0, vy: 0 }];
+
+  const pinnedIdx = syncPinnedBallToPointer(bodies, { id: '0', type: 'ball' }, { x: 90, y: 95 }, 0.5);
+
+  assert.equal(pinnedIdx, 0);
+  assert.deepEqual(bodies[0], { x: 90, y: 95, oldX: 30, oldY: 35, vx: 120, vy: 120 });
 });
 
 test('dragged ball sync ignores non-ball drags and out-of-range ids', () => {

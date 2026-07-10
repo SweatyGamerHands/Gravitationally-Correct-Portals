@@ -1,20 +1,38 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Gravitationally Correct Portals
 
-# Run and deploy your AI Studio app
+An interactive React + Canvas sandbox for experimenting with portal-linked gravity fields, collision response, and momentum transfer through paired apertures.
 
-This contains everything you need to run your app locally.
+## Features
 
-View your app in AI Studio: https://ai.studio/apps/926d1ecf-388c-4054-ac11-c6755c54b790
+- Canvas-based 2D physics simulation with configurable substeps.
+- Paired portals that reorient motion and gravity across the bridge.
+- One-sided or two-sided portal entry modes.
+- Draggable balls, portals, and portal rotation handles.
+- Visual field-flow arrows, warped grid overlay, and speed-based trails.
+- Node test coverage for core simulation math and known portal-edge regressions.
 
-## Run Locally
+## Run locally
 
-**Prerequisites:**  Node.js
+**Prerequisite:** Node.js 20+
 
+```bash
+npm install
+npm run dev
+```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+The dev server starts on port `3000` and binds to `0.0.0.0` for container-friendly previews.
+
+## Quality checks
+
+```bash
+npm test
+npm run lint
+npm run build
+```
+
+## Project structure
+
+- `src/App.tsx` — React UI, canvas rendering, and the live simulation loop.
+- `src/simulation/physics.ts` — shared math helpers for integration, gravity, portal crossing, collision geometry, and drag pinning.
+- `src/simulation/Ball.ts` — standalone ball model used by focused simulation tests.
+- `src/tests/simulation.test.ts` — Node test suite for physics and portal edge cases.
