@@ -18,6 +18,8 @@ import {
 } from 'lucide-react';
 import {
   TELEPORT_COOLDOWN_DISTANCE,
+  FIXED_TIMESTEP,
+  MAX_ACCUMULATED_TIME,
   computeGravityAt,
   getBaselineG,
   getCrossingIntersection,
@@ -32,6 +34,7 @@ import {
   type DragState,
 } from './simulation/physics';
 import { withPortalVectors, type Point, type Portal } from './simulation/types';
+import { rk4FieldStep } from './simulation/visualization';
 
 // --- Constants & Types ---
 const DEFAULT_SUBSTEPS = 12; 
@@ -420,6 +423,9 @@ export default function App() {
     vacuum: false,
     showGrid: true,
     showFlow: true,
+    showStreamlines: true,
+    showHeatmap: true,
+    debugOverlay: false,
     flowDensity: 15,
     flowScale: 1.0,
     showHelp: false,
@@ -441,6 +447,7 @@ export default function App() {
   const frameCount = useRef(0);
   const lastTime = useRef(performance.now());
   const prevTime = useRef(performance.now());
+  const accumulatorRef = useRef(0);
   const initializedRef = useRef(false);
   const canvasSizeRef = useRef({ width: 0, height: 0 });
   const initialPortalWidthRef = useRef(config.portalWidth);
@@ -496,8 +503,13 @@ export default function App() {
         const scaleY = hasPreviousSize ? height / previousSize.height : 1;
         const isRealSizeChange = !hasPreviousSize || Math.abs(scaleX - 1) >= 1e-6 || Math.abs(scaleY - 1) >= 1e-6;
 
-        canvas.width = width;
-        canvas.height = height;
+        const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+        canvas.width = Math.round(width * dpr);
+        canvas.height = Math.round(height * dpr);
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+        const resizeCtx = canvas.getContext('2d');
+        resizeCtx?.setTransform(dpr, 0, 0, dpr, 0, 0);
         canvasSizeRef.current = { width, height };
 
         if (initializedRef.current && hasPreviousSize && isRealSizeChange) {
@@ -667,6 +679,60 @@ export default function App() {
     }
   }, [getGravityAt]);
 
+
+  const drawHeatmap = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number, currentPortals: Portal[]) => {
+    const step = Math.max(36, Math.min(70, Math.round(Math.min(w, h) / 8)));
+    const base = Math.max(1, Math.abs(getBaselineG(configRef.current.vacuum, configRef.current.gravity)));
+    ctx.save();
+    for (let y = 0; y < h; y += step) {
+      for (let x = 0; x < w; x += step) {
+        const g = getGravityAt(x + step / 2, y + step / 2, currentPortals);
+        const deviation = Math.min(1, Math.hypot(g.x, g.y - base) / base);
+        if (deviation < 0.03) continue;
+        ctx.fillStyle = `rgba(255, 157, 0, ${deviation * 0.16})`;
+        ctx.fillRect(x, y, step + 1, step + 1);
+      }
+    }
+    ctx.restore();
+  }, [getGravityAt]);
+
+  const drawStreamlines = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number, currentPortals: Portal[]) => {
+    const seeds: Point[] = [];
+    currentPortals.forEach(portal => {
+      for (let i = -2; i <= 2; i++) seeds.push({ x: portal.x + portal.dir.x * (i * portal.width / 5) + portal.normal.x * 18, y: portal.y + portal.dir.y * (i * portal.width / 5) + portal.normal.y * 18 });
+    });
+    for (let x = w * 0.15; x <= w * 0.85; x += Math.max(120, w / 5)) seeds.push({ x, y: h * 0.15 });
+    ctx.save();
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = 'rgba(0, 255, 210, 0.28)';
+    for (const seed of seeds) {
+      let p = seed;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      for (let i = 0; i < 42; i++) {
+        p = rk4FieldStep(p, 10, currentPortals, configRef.current);
+        if (p.x < 0 || p.y < 0 || p.x > w || p.y > h) break;
+        ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }, []);
+
+  const drawDebugOverlay = useCallback((ctx: CanvasRenderingContext2D, currentPortals: Portal[]) => {
+    ctx.save();
+    ctx.lineWidth = 2;
+    currentPortals.forEach(portal => {
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.beginPath(); ctx.moveTo(portal.x, portal.y); ctx.lineTo(portal.x + portal.dir.x * 55, portal.y + portal.dir.y * 55); ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,157,0,0.65)';
+      ctx.beginPath(); ctx.moveTo(portal.x, portal.y); ctx.lineTo(portal.x + portal.normal.x * 55, portal.y + portal.normal.y * 55); ctx.stroke();
+      const g = getGravityAt(portal.x + portal.normal.x * 22, portal.y + portal.normal.y * 22, currentPortals);
+      ctx.strokeStyle = portal.color; ctx.beginPath(); ctx.moveTo(portal.x, portal.y); ctx.lineTo(portal.x + g.x * 0.04, portal.y + g.y * 0.04); ctx.stroke();
+    });
+    ctx.restore();
+  }, [getGravityAt]);
+
   const resolveCollisions = useCallback((balls: Ball[], bounce: number, pinnedIdx: number = -1) => {
     for (let i = 0; i < balls.length; i++) {
       const b1 = balls[i];
@@ -749,15 +815,20 @@ export default function App() {
         lastTime.current = time;
       }
 
-      const w = canvas.width;
-      const h = canvas.height;
+      const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+      const w = canvasSizeRef.current.width || canvas.clientWidth;
+      const h = canvasSizeRef.current.height || canvas.clientHeight;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
       ctx.fillStyle = '#0a0a0c';
       ctx.fillRect(0, 0, w, h);
 
+      if (config.showHeatmap) drawHeatmap(ctx, w, h, portals);
+
       if (config.showGrid) {
         drawGrid(ctx, w, h, portals);
       }
+      if (config.showStreamlines) drawStreamlines(ctx, w, h, portals);
       
       if (config.showFlow) {
         drawFlow(ctx, w, h, portals);
@@ -768,15 +839,16 @@ export default function App() {
       
       // Calculate proper timestep based on actual frame performance
       const realFrameDt = (time - prevTime.current) / 1000;
-      const frameDt = getScaledFrameDt(realFrameDt, config.timeScale);
       prevTime.current = time;
-      const dt = frameDt / config.substeps;
+      const scaledFrameDt = getScaledFrameDt(realFrameDt, config.timeScale, MAX_ACCUMULATED_TIME);
+      accumulatorRef.current = Math.min(MAX_ACCUMULATED_TIME, accumulatorRef.current + scaledFrameDt);
+      const dt = FIXED_TIMESTEP / Math.max(1, config.substeps);
 
-      // Update pinned ball position BEFORE substeps so collisions reflect actual pointer location this frame
-      // Release velocity is pointer delta over elapsed simulation time, not raw frame displacement.
-      const pinnedIdx = syncPinnedBallToPointer(objectsRef.current, dragStateRef.current, lastPos.current, frameDt);
+      // Update pinned ball position BEFORE fixed steps so collisions reflect actual pointer location.
+      const pinnedIdx = syncPinnedBallToPointer(objectsRef.current, dragStateRef.current, lastPos.current, Math.max(scaledFrameDt, dt));
 
-      for (let s = 0; s < config.substeps; s++) {
+      while (accumulatorRef.current >= FIXED_TIMESTEP) {
+        for (let s = 0; s < Math.max(1, config.substeps); s++) {
         objects.forEach((obj, index) => {
           // DRAG PINNING: Skip physics for the currently held ball
           if (index === pinnedIdx) return;
@@ -799,6 +871,8 @@ export default function App() {
           if (index === pinnedIdx) return;
           obj.constrain(w, h, portals, bounce, config.twoSided);
         });
+        }
+        accumulatorRef.current -= FIXED_TIMESTEP;
       }
 
       // Draw Portals
@@ -860,12 +934,13 @@ export default function App() {
       });
 
       objects.forEach(obj => obj.draw(ctx, config.trailIntensity, portals, config.twoSided));
+      if (config.debugOverlay) drawDebugOverlay(ctx, portals);
       animationId = requestAnimationFrame(render);
     };
 
     animationId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animationId);
-  }, []);
+  }, [drawDebugOverlay, drawFlow, drawGrid, drawHeatmap, drawStreamlines, getGravityAt, resolveCollisions]);
 
   const handleStart = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.preventDefault();
@@ -1048,10 +1123,10 @@ export default function App() {
           </button>
           <div>
             <div className="text-[#00a2ff] text-xs font-bold tracking-[0.2em] mb-2 uppercase">System Architecture</div>
-            <h1 className="text-3xl md:text-4xl font-light leading-tight">Spacetime Portal <br/><span className="font-bold italic">Sandbox</span></h1>
+            <h1 className="text-3xl md:text-4xl font-light leading-tight">Idealized Portal <br/><span className="font-bold italic">Field Sandbox</span></h1>
           </div>
           <p className="text-white/50 text-xs md:text-sm leading-relaxed max-w-md mt-4 lg:mt-0">
-            An advanced 2D physics engine utilizing Verlet integration to simulate momentum conservation and gravitational leakage through portals.
+            An idealized Newtonian 2D sandbox: one canonical portal transform drives momentum, aperture-transported gravity, field arrows, heat, streamlines, and crossings.
           </p>
         </div>
 
@@ -1350,6 +1425,22 @@ export default function App() {
                   <div className={`absolute top-1 w-2 h-2 rounded-full transition-all ${config.showFlow ? 'left-5 bg-white' : 'left-1 bg-white/40'}`} />
                 </div>
               </label>
+
+              <div className="grid grid-cols-3 gap-2 pt-2">
+                {[
+                  ['Heat', 'showHeatmap'],
+                  ['Lines', 'showStreamlines'],
+                  ['Debug', 'debugOverlay'],
+                ].map(([label, key]) => (
+                  <button
+                    key={key}
+                    onClick={() => setConfig(prev => ({ ...prev, [key]: !prev[key as keyof typeof prev] }))}
+                    className={`min-h-11 rounded-xl border text-[9px] uppercase font-bold transition-colors ${config[key as keyof typeof config] ? 'border-[#00a2ff]/60 bg-[#00a2ff]/15 text-[#00a2ff]' : 'border-white/10 bg-white/5 text-white/35'}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
 
               {config.showFlow && (
                 <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">

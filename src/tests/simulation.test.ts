@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  apertureVisibilityWeight,
   computeGravityAt,
   getBaselineG,
   getCrossingIntersection,
@@ -14,8 +15,11 @@ import {
   simulateLinearDisplacement,
   syncPinnedBallToPointer,
   transformThroughPortal,
+  mapPointThroughPortal,
+  mapVelocityThroughPortal,
+  sampleField,
 } from '../simulation/physics';
-import { withPortalVectors } from '../simulation/types';
+import { withPortalVectors, type Point } from '../simulation/types';
 import { Ball } from '../simulation/Ball';
 
 const portals = [
@@ -208,4 +212,82 @@ test('dragged ball sync ignores non-ball drags and out-of-range ids', () => {
   assert.equal(syncPinnedBallToPointer(bodies, { id: '0', type: 'handle' }, { x: 100, y: 120 }), -1);
   assert.equal(syncPinnedBallToPointer(bodies, { id: '5', type: 'ball' }, { x: 100, y: 120 }), -1);
   assert.deepEqual(bodies[0], { x: 10, y: 15, oldX: 8, oldY: 12 });
+});
+
+
+const nearly = (a: number, b: number, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} not near ${b}`);
+const speed = (p: Point) => Math.hypot(p.x, p.y);
+
+test('canonical portal point and vector round trips at several angles', () => {
+  const angles = [0, Math.PI / 2, Math.PI, 0.37, -1.9];
+  for (const a of angles) {
+    const entry = withPortalVectors({ id: 'e', x: 20, y: -30, angle: a, color: '#f90', width: 80 });
+    const exit = withPortalVectors({ id: 'x', x: 210, y: 140, angle: a + 1.234, color: '#09f', width: 80 });
+    const p = { x: entry.x + entry.dir.x * 17 + entry.normal.x * 22, y: entry.y + entry.dir.y * 17 + entry.normal.y * 22 };
+    const v = { x: 123, y: -45 };
+    const p2 = mapPointThroughPortal(mapPointThroughPortal(p, entry, exit), exit, entry);
+    const v2 = mapVelocityThroughPortal(mapVelocityThroughPortal(v, entry, exit), exit, entry);
+    nearly(p2.x, p.x); nearly(p2.y, p.y); nearly(v2.x, v.x); nearly(v2.y, v.y); nearly(speed(v2), speed(v));
+  }
+});
+
+test('canonical portal transform preserves tangent and inverts normal', () => {
+  const entry = withPortalVectors({ id: 'e', x: 0, y: 0, angle: 0.4, color: '#f90', width: 100 });
+  const exit = withPortalVectors({ id: 'x', x: 100, y: 50, angle: -1.1, color: '#09f', width: 100 });
+  const localPoint = { x: entry.x + entry.dir.x * 30 + entry.normal.x * 12, y: entry.y + entry.dir.y * 30 + entry.normal.y * 12 };
+  const mapped = getPortalLocal(mapPointThroughPortal(localPoint, entry, exit), exit);
+  nearly(mapped.along, 30); nearly(mapped.normal, -12);
+  const mappedNormal = mapVelocityThroughPortal(entry.normal, entry, exit);
+  nearly(mappedNormal.x, -exit.normal.x); nearly(mappedNormal.y, -exit.normal.y);
+});
+
+test('field solver returns exact baseline when disabled and converges far away', () => {
+  const cfg = { vacuum: false, gravity: 1, correctGravity: true, portalPull: 1, twoSided: true };
+  assert.deepEqual(computeGravityAt(0, 0, portals, { ...cfg, correctGravity: false }), { x: 0, y: 800 });
+  const far = computeGravityAt(100000, -100000, portals, cfg);
+  assert.ok(Math.abs(far.x) < 0.01);
+  assert.ok(Math.abs(far.y - 800) < 0.01);
+});
+
+test('aperture visibility is smooth and finite at center and endpoints', () => {
+  const p = portals[0];
+  const center = apertureVisibilityWeight({ x: p.x, y: p.y + 4 }, p, true);
+  const edgeA = apertureVisibilityWeight({ x: p.x + p.width / 2 - 0.001, y: p.y + 4 }, p, true);
+  const edgeB = apertureVisibilityWeight({ x: p.x + p.width / 2 + 0.001, y: p.y + 4 }, p, true);
+  assert.ok(Number.isFinite(center) && Number.isFinite(edgeA) && Number.isFinite(edgeB));
+  assert.ok(center > edgeA);
+  assert.ok(Math.abs(edgeA - edgeB) < 0.001);
+});
+
+test('field recursion is deterministic bounded and two-sided aware', () => {
+  const cfg = { vacuum: false, gravity: 1, correctGravity: true, portalPull: 1, twoSided: true, maxDepth: 4, fieldClamp: 1000 };
+  const a = sampleField({ x: 100, y: 120 }, portals, cfg);
+  const b = sampleField({ x: 100, y: 120 }, portals, cfg);
+  assert.deepEqual(a, b);
+  assert.ok(speed(a.acceleration) <= 1000 + 1e-9);
+  const one = apertureVisibilityWeight({ x: portals[0].x, y: portals[0].y - 20 }, portals[0], false);
+  assert.equal(one, 0);
+});
+
+test('zero gravity high speed portal crossing preserves speed', () => {
+  const body = new Ball(100, 40, 5, 1);
+  body.vx = 0; body.vy = 1800; body.oldX = body.x; body.oldY = body.y;
+  const newPos = { x: body.x, y: body.y + body.vy * (1 / 30) };
+  const hit = getCrossingIntersection({ x: body.x, y: body.y }, newPos, portals[0], body.radius);
+  assert.ok(hit);
+  body.x = newPos.x; body.y = newPos.y;
+  body.teleport(portals[0], portals[1], hit.interX, hit.interY);
+  nearly(Math.hypot(body.vx, body.vy), 1800);
+});
+
+test('fixed step integration is invariant to render frame grouping', () => {
+  const run = (frames: number[]) => {
+    let pos = { x: 0, y: 0 }; let vel = { x: 10, y: 0 }; let acc = 0; const dt = 1 / 120;
+    for (const frame of frames) { acc += frame; while (acc >= dt - 1e-12) { vel = integrateVelocity(vel, { x: 0, y: 800 }, 1, dt); pos = integratePosition(pos, vel, dt); acc -= dt; } }
+    return { pos, vel };
+  };
+  const a = run(Array(60).fill(1 / 60));
+  const b = run(Array(30).fill(1 / 30));
+  const c = run(Array(120).fill(1 / 120));
+  nearly(a.pos.y, b.pos.y); nearly(a.pos.y, c.pos.y); nearly(a.vel.y, b.vel.y); nearly(a.vel.y, c.vel.y);
 });
