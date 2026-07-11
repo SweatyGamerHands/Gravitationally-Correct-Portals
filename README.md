@@ -1,15 +1,18 @@
 # Gravitationally Correct Portals
 
-An interactive React + Canvas sandbox for experimenting with portal-linked gravity fields, collision response, and momentum transfer through paired apertures.
+An interactive React + Canvas sandbox for an **idealized Newtonian portal-physics model**. It focuses on coherent 2D portal transforms, aperture-transported gravity, continuous-looking traversal, and field visualizations that agree with object motion.
+
+This is not a complete general-relativity simulation. It is a deliberate educational model: uniform gravity is smoothly blended with linked-aperture gravity transported through paired portal frames.
 
 ## Features
 
-- Canvas-based 2D physics simulation with configurable substeps.
-- Paired portals that reorient motion and gravity across the bridge.
-- One-sided or two-sided portal entry modes.
-- Draggable balls, portals, and portal rotation handles.
-- Visual field-flow arrows, warped grid overlay, and speed-based trails.
-- Node test coverage for core simulation math and known portal-edge regressions.
+- Canonical portal transform for points, vectors, velocity, acceleration, and residual frame motion.
+- One authoritative field sampler used by body physics, flow arrows, heatmap, streamlines, and grid distortion.
+- Smooth finite-aperture gravity influence with distance/edge falloff, one-sided support, recursive attenuation, and magnitude clamping.
+- Fixed-timestep physics accumulator for better render-frame invariance.
+- Swept portal crossing helpers, rim collision geometry, and speed-preserving portal motion in vacuum.
+- Retina-aware canvas sizing for crisp iPhone/Safari rendering.
+- Dark neon portal aesthetic with flow arrows, field heatmap, RK4 streamlines, trails, metrics, and debug axes support.
 
 ## Run locally
 
@@ -32,7 +35,13 @@ npm run build
 
 ## Project structure
 
-- `src/App.tsx` — React UI, canvas rendering, and the live simulation loop.
-- `src/simulation/physics.ts` — shared math helpers for integration, gravity, portal crossing, collision geometry, and drag pinning.
-- `src/simulation/Ball.ts` — standalone ball model used by focused simulation tests.
-- `src/tests/simulation.test.ts` — Node test suite for physics and portal edge cases.
+- `src/App.tsx` — React UI, high-DPI canvas rendering, controls, and orchestration of fixed-step simulation.
+- `src/simulation/portalTransform.ts` — canonical portal coordinate and vector transforms.
+- `src/simulation/fieldSolver.ts` — authoritative aperture-transported gravity sampler.
+- `src/simulation/integrator.ts` — fixed-step-friendly integration and drag pinning helpers.
+- `src/simulation/portalTraversal.ts` — swept aperture crossing and teleport mapping helpers.
+- `src/simulation/collisions.ts` — portal rim collision geometry.
+- `src/simulation/visualization.ts` — RK4 field-line integration helpers.
+- `src/simulation/physics.ts` — compatibility barrel for simulation helpers.
+- `src/tests/simulation.test.ts` — regression tests for transforms, field solving, traversal, collisions, drag, and frame-rate invariance.
+- `docs/PHYSICS_MODEL.md` — equations, assumptions, traversal algorithm, tolerances, and limitations.

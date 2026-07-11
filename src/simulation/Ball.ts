@@ -10,6 +10,8 @@ export class Ball {
   radius: number;
   mass: number;
   cooldown: number;
+  vx: number;
+  vy: number;
   color: string;
   trail: Point[];
 
@@ -21,6 +23,8 @@ export class Ball {
     this.radius = r;
     this.mass = m;
     this.cooldown = 0;
+    this.vx = 0;
+    this.vy = 0;
     this.color = `hsl(${Math.random() * 60 + 190}, 90%, 65%)`;
     this.trail = [];
   }
@@ -30,8 +34,8 @@ export class Ball {
     gravityFn: (x: number, y: number) => Point, 
     dt: number
   ) {
-    const vx = (this.x - this.oldX);
-    const vy = (this.y - this.oldY);
+    const vx = this.vx || (this.x - this.oldX);
+    const vy = this.vy || (this.y - this.oldY);
     const g = gravityFn(this.x, this.y);
 
     this.oldX = this.x;
@@ -39,8 +43,10 @@ export class Ball {
     
     // Strict Verlet Integration using absolute seconds
     const frictionSub = Math.pow(friction, dt * 60); 
-    this.x += vx * frictionSub + g.x * dt * dt; 
-    this.y += vy * frictionSub + g.y * dt * dt;
+    this.vx = vx * frictionSub + g.x * dt;
+    this.vy = vy * frictionSub + g.y * dt;
+    this.x += this.vx * dt; 
+    this.y += this.vy * dt;
 
     if (this.cooldown > 0) this.cooldown--;
     
@@ -199,8 +205,8 @@ export class Ball {
   }
 
   teleport(entry: Portal, exit: Portal, interX: number, interY: number) {
-    const vx = this.x - this.oldX;
-    const vy = this.y - this.oldY;
+    const vx = this.vx || (this.x - this.oldX);
+    const vy = this.vy || (this.y - this.oldY);
 
     // 1. Residual post-intersection displacement still owed this frame
     const resX = this.x - interX;
@@ -224,6 +230,9 @@ export class Ball {
     const newVy = vAlong * exit.dir.y - vNorm * exit.normal.y;
     const newResX = resAlong * exit.dir.x - resNorm * exit.normal.x;
     const newResY = resAlong * exit.dir.y - resNorm * exit.normal.y;
+
+    this.vx = newVx;
+    this.vy = newVy;
 
     // 5. Add Explicit Outward Clearance to prevent precision re-collision 
     const flowSign = Math.sign(newVx * exit.normal.x + newVy * exit.normal.y) || 1;
