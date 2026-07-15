@@ -19,6 +19,8 @@ import {
   mapVelocityThroughPortal,
   sampleField,
 } from '../simulation/physics';
+import { canBodyTraverseAperture, stepBodyContinuous, usablePortalHalfWidth } from '../simulation/runtime';
+import { traceStreamlineSegments } from '../simulation/visualization';
 import { withPortalVectors, type Point } from '../simulation/types';
 import { Ball } from '../simulation/Ball';
 
@@ -96,28 +98,20 @@ test('explicit velocity integration uses seconds for velocity and acceleration',
   assert.ok(Math.abs(nextPosition.y - 2 / 15) < 1e-9);
 });
 
-test('crossing near aperture edge includes ball radius overlap but rejects clear misses', () => {
+test('full-body aperture clearance accepts center, off-center, exact edge and rejects overlap-only endpoints', () => {
   const portal = portals[0];
   const radius = 10;
+  const usable = usablePortalHalfWidth(portal, radius);
 
-  for (const side of [1, -1]) {
-    const edgeX = portal.x + side * portal.width / 2;
-    const overlappingEdge = getCrossingIntersection(
-      { x: edgeX + side * (radius - 0.5), y: portal.y - 20 },
-      { x: edgeX + side * (radius - 0.5), y: portal.y + 20 },
-      portal,
-      radius,
-    );
-    assert.ok(overlappingEdge);
+  assert.ok(canBodyTraverseAperture({ along: 0 }, portal, radius));
+  assert.ok(canBodyTraverseAperture({ along: usable - 1 }, portal, radius));
+  assert.ok(canBodyTraverseAperture({ along: usable }, portal, radius));
+  assert.equal(canBodyTraverseAperture({ along: usable + 0.1 }, portal, radius), false);
+  assert.equal(canBodyTraverseAperture({ along: -usable - 0.1 }, portal, radius), false);
 
-    const outsideEdge = getCrossingIntersection(
-      { x: edgeX + side * (radius + 0.5), y: portal.y - 20 },
-      { x: edgeX + side * (radius + 0.5), y: portal.y + 20 },
-      portal,
-      radius,
-    );
-    assert.equal(outsideEdge, null);
-  }
+  assert.ok(getCrossingIntersection({ x: portal.x, y: portal.y - 20 }, { x: portal.x, y: portal.y + 20 }, portal, radius));
+  assert.equal(getCrossingIntersection({ x: portal.x + usable + 0.1, y: portal.y - 20 }, { x: portal.x + usable + 0.1, y: portal.y + 20 }, portal, radius), null);
+  assert.equal(canBodyTraverseAperture({ along: 0 }, { ...portal, width: radius }, radius), false);
 });
 
 test('grazing an aperture endcap collides with portal edge capsule', () => {
@@ -151,29 +145,29 @@ test('back-face approach outside aperture is not eligible for support or crossin
 test('blocked back support does not stop tangential velocity before penetration', () => {
   const portal = withPortalVectors({ id: 'vertical', x: 100, y: 100, angle: Math.PI / 2, color: '#f90', width: 100 });
   const ball = new Ball(111.3, 100, 10, 1);
-  ball.oldX = 113.3;
-  ball.oldY = 100;
+  ball.vx = 0;
+  ball.vy = -120;
 
   ball.blockedFaceSupport(portal);
 
   assert.equal(ball.x, 111.3);
   assert.equal(ball.y, 100);
-  assert.equal(ball.x - ball.oldX, -2);
-  assert.equal(ball.y - ball.oldY, 0);
+  assert.equal(ball.vx, 0);
+  assert.equal(ball.vy, -120);
 });
 
 test('blocked back support preserves separating tangential velocity on penetration', () => {
   const portal = withPortalVectors({ id: 'vertical', x: 100, y: 100, angle: Math.PI / 2, color: '#f90', width: 100 });
   const ball = new Ball(110, 100, 10, 1);
-  ball.oldX = 105;
-  ball.oldY = 100;
+  ball.vx = 50;
+  ball.vy = 0;
 
   ball.blockedFaceSupport(portal);
 
   assert.equal(ball.x, 111.1);
   assert.equal(ball.y, 100);
-  assert.equal(ball.x - ball.oldX, 5);
-  assert.equal(ball.y - ball.oldY, 0);
+  assert.equal(ball.vx, 50);
+  assert.equal(ball.vy, 0);
 });
 
 test('dragged ball index is parsed only for active ball drags', () => {
@@ -271,13 +265,10 @@ test('field recursion is deterministic bounded and two-sided aware', () => {
 
 test('zero gravity high speed portal crossing preserves speed', () => {
   const body = new Ball(100, 40, 5, 1);
-  body.vx = 0; body.vy = 1800; body.oldX = body.x; body.oldY = body.y;
-  const newPos = { x: body.x, y: body.y + body.vy * (1 / 30) };
-  const hit = getCrossingIntersection({ x: body.x, y: body.y }, newPos, portals[0], body.radius);
-  assert.ok(hit);
-  body.x = newPos.x; body.y = newPos.y;
-  body.teleport(portals[0], portals[1], hit.interX, hit.interY);
+  body.vx = 0; body.vy = 1800;
+  stepBodyContinuous(body, 1 / 30, { width: 500, height: 300, portals, friction: 1, bounce: 1, twoSided: true, vacuum: false, gravity: 0, correctGravity: false, portalPull: 1 });
   nearly(Math.hypot(body.vx, body.vy), 1800);
+  assert.ok(Math.abs(body.x - portals[1].x) < 10);
 });
 
 test('fixed step integration is invariant to render frame grouping', () => {
@@ -290,4 +281,54 @@ test('fixed step integration is invariant to render frame grouping', () => {
   const b = run(Array(30).fill(1 / 30));
   const c = run(Array(120).fill(1 / 120));
   nearly(a.pos.y, b.pos.y); nearly(a.pos.y, c.pos.y); nearly(a.vel.y, b.vel.y); nearly(a.vel.y, c.vel.y);
+});
+
+
+test('continuous step endpoint graze collides while fitting oblique crossing teleports and continues', () => {
+  const world = { width: 500, height: 400, portals, friction: 1, bounce: 1, twoSided: true, vacuum: false, gravity: 0, correctGravity: false, portalPull: 1 };
+  const graze = new Ball(portals[0].x + usablePortalHalfWidth(portals[0], 10) + 5, portals[0].y - 50, 10, 1);
+  graze.vy = 1000;
+  stepBodyContinuous(graze, 0.1, world);
+  assert.ok(graze.y < portals[0].y + 40, 'endpoint graze should not teleport to exit');
+  assert.ok(graze.vy < 1000, 'rim collision updates velocity');
+
+  const cross = new Ball(portals[0].x, portals[0].y - 50, 10, 1);
+  cross.vx = 30; cross.vy = 1000;
+  stepBodyContinuous(cross, 0.1, world);
+  assert.ok(Math.abs(cross.x - portals[1].x) < 80, 'valid crossing emerges at linked portal');
+  assert.ok(Math.hypot(cross.vx, cross.vy) > 900, 'speed preserved with zero gravity/friction');
+});
+
+test('one-sided front field is strongest near mouth and decays smoothly', () => {
+  const p = portals[0];
+  const cfg = { vacuum: false, gravity: 1, correctGravity: true, portalPull: 1, twoSided: false };
+  const weights = [0.01, 1, 5, 20, 50, 200].map(d => apertureVisibilityWeight({ x: p.x + p.normal.x * d, y: p.y + p.normal.y * d }, p, false));
+  for (let i = 1; i < weights.length; i++) assert.ok(weights[i] <= weights[i - 1] + 1e-6, `${weights}`);
+  assert.ok(weights[0] > 0.85);
+});
+
+test('streamline enters and emerges from linked portal without a straight chord', () => {
+  const segments = traceStreamlineSegments({ x: portals[0].x, y: portals[0].y - 20 }, 5, 20, portals, { vacuum: false, gravity: 1, correctGravity: true, portalPull: 1, twoSided: true }, { width: 500, height: 300 });
+  assert.ok(segments.length >= 2);
+  const firstExit = segments[1][0];
+  assert.ok(Math.hypot(firstExit.x - portals[1].x, firstExit.y - portals[1].y) < 5);
+});
+
+test('trail segments at drag and portal discontinuities', () => {
+  const b = new Ball(10, 10, 5, 1);
+  b.addTrailPoint(false, 1); b.x = 20; b.addTrailPoint(false, 1);
+  b.clearTrailSegment();
+  assert.equal(b.trail.length, 0);
+  b.addTrailPoint(true);
+  assert.ok(Number.isNaN(b.trail[0].x));
+});
+
+test('long-running randomized continuous stepping produces finite state', () => {
+  const world = { width: 800, height: 600, portals, friction: 0.999, bounce: 0.8, twoSided: true, vacuum: false, gravity: 0.2, correctGravity: true, portalPull: 1 };
+  let seed = 7;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const b = new Ball(200, 150, 8, 1);
+  b.vx = 500; b.vy = -300;
+  for (let i = 0; i < 2000; i++) { if (i % 97 === 0) { b.vx += (rnd() - 0.5) * 50; b.vy += (rnd() - 0.5) * 50; } stepBodyContinuous(b, 1 / 120, world); }
+  assert.ok([b.x, b.y, b.vx, b.vy].every(Number.isFinite));
 });

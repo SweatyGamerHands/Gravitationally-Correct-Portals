@@ -1,6 +1,6 @@
 import type { Point, Portal } from './types';
 import { BASE_G, DEFAULT_FIELD_CLAMP, DEFAULT_FIELD_MAX_DEPTH } from './constants';
-import { mag, mapAccelerationThroughPortal, scale, worldPointToPortalLocal } from './portalTransform';
+import { mag, mapAccelerationThroughPortal, mapPointThroughPortal, scale, worldPointToPortalLocal } from './portalTransform';
 
 export type FieldConfig = { vacuum?: boolean; gravity: number; correctGravity?: boolean; portalPull?: number; twoSided?: boolean; maxDepth?: number; fieldClamp?: number };
 export type FieldSample = { acceleration: Point; directWeight: number; portalWeight: number; contributions: { portalId: string; depth: number; weight: number; vector: Point }[] };
@@ -11,14 +11,14 @@ export const getBaselineG = (_vacuum: boolean | undefined, gravityMult: number) 
 
 export const apertureVisibilityWeight = (point: Point, portal: Portal, twoSided = true): number => {
   const local = worldPointToPortalLocal(point, portal);
-  if (!twoSided && local.normal < 0) return 0;
+  if (!twoSided && local.normal < -0.5) return 0;
   const half = portal.width / 2;
   const absN = Math.abs(local.normal);
   const edgeDistance = half - Math.abs(local.along);
   const edgeSoft = Math.max(8, portal.width * 0.12);
   const edge = smoothstep(clamp01((edgeDistance + edgeSoft) / (2 * edgeSoft)));
   const apertureAngle = Math.atan2(half, absN + half * 0.18) / (Math.PI / 2);
-  const face = twoSided ? 1 : smoothstep(clamp01(local.normal / Math.max(10, portal.width * 0.18)));
+  const face = twoSided ? 1 : (local.normal >= -0.5 ? 1 : 0);
   const rangeFade = 1 / (1 + (absN / Math.max(1, portal.width * 1.8)) ** 2);
   return clamp01(edge * apertureAngle * face * rangeFade);
 };
@@ -41,13 +41,14 @@ export const sampleField = (point: Point, portals: Portal[], config: FieldConfig
       const w = apertureVisibilityWeight(p, entry, twoSided) * attenuation * pull;
       if (w <= 1e-5) return;
       const exit = linkedExit(portals, i);
+      const mappedPoint = mapPointThroughPortal(p, entry, exit);
       const transported = mapAccelerationThroughPortal(vector, exit, entry);
       const branchWeight = w * (0.62 ** depth);
       contributions.push({ portalId: entry.id, depth: depth + 1, weight: branchWeight, vector: transported });
       totalPortalWeight += branchWeight;
       ax += transported.x * branchWeight;
       ay += transported.y * branchWeight;
-      if (depth + 1 < maxDepth && !path.includes(exit.id)) visit(p, transported, depth + 1, attenuation * w * 0.5, [...path, entry.id, exit.id]);
+      if (depth + 1 < maxDepth && !path.includes(exit.id)) visit(mappedPoint, transported, depth + 1, attenuation * w * 0.5, [...path, entry.id, exit.id]);
     });
   };
   visit(point, base, 0, 1, []);
