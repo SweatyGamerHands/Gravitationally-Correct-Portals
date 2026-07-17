@@ -1,6 +1,6 @@
 import type { Point, Portal } from './types';
-import { PORTAL_APERTURE_RADIUS_EPSILON, TRAVERSAL_EPSILON, PORTAL_EDGE_RADIUS } from './constants';
-import { mapPointThroughPortal, mapResidualDisplacementThroughPortal, mapVelocityThroughPortal, worldPointToPortalLocal } from './portalTransform';
+import { PORTAL_APERTURE_RADIUS_EPSILON, PORTAL_EDGE_RADIUS } from './constants';
+import { worldPointToPortalLocal } from './portalTransform';
 
 export const getPortalApertureHalfWidth = (portal: Portal) => portal.width / 2;
 export const getUsablePortalHalfWidth = (portal: Portal, radius = 0, rimRadius = PORTAL_EDGE_RADIUS, clearance = PORTAL_APERTURE_RADIUS_EPSILON) => portal.width / 2 - radius - rimRadius - clearance;
@@ -17,18 +17,4 @@ export const getCrossingIntersection = (oldPos: Point, newPos: Point, portal: Po
   const local = worldPointToPortalLocal({ x: interX, y: interY }, portal);
   if (!isWithinPortalAperture(local, portal, radius)) return null;
   return { t, interX, interY, dotPrev: prevLocal.normal, local };
-};
-
-export type TraversalBody = { x: number; y: number; oldX: number; oldY: number; vx: number; vy: number; radius: number; trail?: Point[]; cooldown?: number };
-export const teleportBodyAtCrossing = (body: TraversalBody, entry: Portal, exit: Portal, crossing: Point, proposed: Point) => {
-  const mappedCrossing = mapPointThroughPortal(crossing, entry, exit);
-  const residual = { x: proposed.x - crossing.x, y: proposed.y - crossing.y };
-  const mappedResidual = mapResidualDisplacementThroughPortal(residual, entry, exit);
-  const mappedVelocity = mapVelocityThroughPortal({ x: body.vx, y: body.vy }, entry, exit);
-  const flowSign = Math.sign(mappedVelocity.x * exit.normal.x + mappedVelocity.y * exit.normal.y) || 1;
-  body.x = mappedCrossing.x + mappedResidual.x + exit.normal.x * flowSign * TRAVERSAL_EPSILON;
-  body.y = mappedCrossing.y + mappedResidual.y + exit.normal.y * flowSign * TRAVERSAL_EPSILON;
-  body.vx = mappedVelocity.x; body.vy = mappedVelocity.y;
-  body.oldX = body.x; body.oldY = body.y;
-  if (body.trail) body.trail = [];
 };

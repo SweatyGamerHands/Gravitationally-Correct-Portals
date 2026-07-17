@@ -14,6 +14,9 @@ import {
   isWithinPortalAperture,
   simulateLinearDisplacement,
   syncPinnedBallToPointer,
+  recordPointerHistory,
+  computePointerReleaseVelocity,
+  applyPointerReleaseVelocity,
   transformThroughPortal,
   mapPointThroughPortal,
   mapVelocityThroughPortal,
@@ -23,6 +26,8 @@ import { canBodyTraverseAperture, stepBodyContinuous, usablePortalHalfWidth } fr
 import { traceStreamlineSegments } from '../simulation/visualization';
 import { withPortalVectors, type Point } from '../simulation/types';
 import { Ball } from '../simulation/Ball';
+
+const bodyRadiusForTest = 10;
 
 const portals = [
   withPortalVectors({ id: 'a', x: 100, y: 100, angle: 0, color: '#f90', width: 100 }),
@@ -331,4 +336,52 @@ test('long-running randomized continuous stepping produces finite state', () => 
   b.vx = 500; b.vy = -300;
   for (let i = 0; i < 2000; i++) { if (i % 97 === 0) { b.vx += (rnd() - 0.5) * 50; b.vy += (rnd() - 0.5) * 50; } stepBodyContinuous(b, 1 / 120, world); }
   assert.ok([b.x, b.y, b.vx, b.vy].every(Number.isFinite));
+});
+
+test('event step applies friction once across a wall event', () => {
+  const eventWorld = { width: 200, height: 200, portals: [], friction: 0.99, bounce: 1, twoSided: true, vacuum: false, gravity: 0, correctGravity: false, portalPull: 1 };
+  const freeWorld = { ...eventWorld, width: 2000 };
+  const hit = new Ball(14, 100, 10, 1);
+  hit.vx = -80;
+  const free = new Ball(1000, 100, 10, 1);
+  free.vx = 80;
+  stepBodyContinuous(hit, 0.1, eventWorld);
+  stepBodyContinuous(free, 0.1, freeWorld);
+  nearly(Math.hypot(hit.vx, hit.vy), Math.hypot(free.vx, free.vy), 1e-6);
+  assert.ok(hit.vx > 0, 'wall reflection should reverse the x velocity');
+});
+
+test('blocked one-sided crossing uses the blocked-side collision normal', () => {
+  const portal = portals[0];
+  const body = new Ball(portal.x, portal.y - 20, 10, 1);
+  body.vy = 400;
+  stepBodyContinuous(body, 0.1, { width: 500, height: 300, portals, friction: 1, bounce: 1, twoSided: false, vacuum: false, gravity: 0, correctGravity: false, portalPull: 1 });
+  assert.ok(body.vy < 0, `expected back-face impact to bounce upward, got ${body.vy}`);
+  assert.ok(body.y < portal.y, 'blocked impact should remain on the blocked side');
+});
+
+test('rim collision resolves when the step begins overlapped', () => {
+  const portal = portals[0];
+  const body = new Ball(portal.x + portal.width / 2 + bodyRadiusForTest - 0.2, portal.y, bodyRadiusForTest, 1);
+  body.vx = -100;
+  stepBodyContinuous(body, 1 / 60, { width: 500, height: 300, portals, friction: 1, bounce: 1, twoSided: true, vacuum: false, gravity: 0, correctGravity: false, portalPull: 1 });
+  assert.ok(Number.isFinite(body.vx) && Number.isFinite(body.x));
+  assert.ok(body.vx > 0, 'overlapped rim start should reflect incoming velocity outward');
+});
+
+test('pointer history computes stable release velocities and cancel suppresses throws', () => {
+  const history = [];
+  recordPointerHistory(history, { x: 0, y: 0 }, 0);
+  recordPointerHistory(history, { x: 12, y: 0 }, 60);
+  recordPointerHistory(history, { x: 24, y: 0 }, 120);
+  const v = computePointerReleaseVelocity(history, 120);
+  assert.ok(Math.abs(v.x - 200) < 1e-9);
+  assert.equal(v.y, 0);
+
+  const bodies = [new Ball(24, 0, 5, 1)];
+  applyPointerReleaseVelocity(bodies, { id: '0', type: 'ball' }, history, false, 120);
+  assert.ok(Math.abs(bodies[0].vx - 200) < 1e-9);
+  applyPointerReleaseVelocity(bodies, { id: '0', type: 'ball' }, history, true, 120);
+  assert.equal(bodies[0].vx, 0);
+  assert.equal(bodies[0].vy, 0);
 });

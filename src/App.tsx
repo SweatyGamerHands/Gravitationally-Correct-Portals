@@ -24,7 +24,10 @@ import {
   getPortalLocal,
   getScaledFrameDt,
   syncPinnedBallToPointer,
+  recordPointerHistory,
+  applyPointerReleaseVelocity,
   type DragState,
+  type PointerHistorySample,
 } from './simulation/physics';
 import { withPortalVectors, type Point, type Portal } from './simulation/types';
 import { Ball } from './simulation/Ball';
@@ -110,6 +113,7 @@ export default function App() {
     dragStateRef.current = nextDragState;
   }, []);
   const lastPos = useRef({ x: 0, y: 0 });
+  const pointerHistoryRef = useRef<PointerHistorySample[]>([]);
   const activePointerId = useRef<number | null>(null);
   const frameCount = useRef(0);
   const lastTime = useRef(performance.now());
@@ -403,68 +407,6 @@ export default function App() {
     ctx.restore();
   }, [getGravityAt]);
 
-  const resolveCollisions = useCallback((balls: Ball[], bounce: number, pinnedIdx: number = -1) => {
-    for (let i = 0; i < balls.length; i++) {
-      const b1 = balls[i];
-      const isPinned1 = i === pinnedIdx;
-      
-      for (let j = i + 1; j < balls.length; j++) {
-        const b2 = balls[j];
-        const isPinned2 = j === pinnedIdx;
-        
-        const dx = b2.x - b1.x;
-        const dy = b2.y - b1.y;
-        const distSq = dx * dx + dy * dy;
-        const minDist = b1.radius + b2.radius;
-
-        if (distSq < minDist * minDist) {
-          const dist = Math.sqrt(distSq) || 0.1;
-          const overlap = (minDist - dist);
-          const nx = dx / dist;
-          const ny = dy / dist;
-          
-          let w1, w2;
-          if (isPinned1 && !isPinned2) { w1 = 0; w2 = 1; }
-          else if (!isPinned1 && isPinned2) { w1 = 1; w2 = 0; }
-          else {
-            const mTotal = b1.mass + b2.mass;
-            w1 = b2.mass / mTotal;
-            w2 = b1.mass / mTotal;
-          }
-          
-          const posCorrectionX = nx * overlap;
-          const posCorrectionY = ny * overlap;
-
-          // 1. Pure Positional Correction
-          b1.x -= posCorrectionX * w1;
-          b1.y -= posCorrectionY * w1;
-          b2.x += posCorrectionX * w2;
-          b2.y += posCorrectionY * w2;
-          
-          // 2. Re-anchor previous positions after positional correction; momentum lives in px/sec.
-          b1.oldX = b1.x;
-          b1.oldY = b1.y;
-          b2.oldX = b2.x;
-          b2.oldY = b2.y;
-          
-          // 3. Explicit physical collision response using px/sec velocity restitution.
-          const rVx = b1.vx - b2.vx;
-          const rVy = b1.vy - b2.vy;
-          const relVelDist = rVx * nx + rVy * ny;
-          
-          // Objects are strictly approaching each other
-          if (relVelDist > 0) {
-              const impulse = (1 + bounce) * relVelDist;
-              b1.vx -= impulse * nx * w1;
-              b1.vy -= impulse * ny * w1;
-              b2.vx += impulse * nx * w2;
-              b2.vy += impulse * ny * w2;
-          }
-        }
-      }
-    }
-  }, []);
-
   // Game Loop
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -515,7 +457,7 @@ export default function App() {
       const dt = FIXED_TIMESTEP / Math.max(1, config.substeps);
 
       // Update pinned ball position BEFORE fixed steps so collisions reflect actual pointer location.
-      const pinnedIdx = syncPinnedBallToPointer(objectsRef.current, dragStateRef.current, lastPos.current, Math.max(scaledFrameDt, dt));
+      const pinnedIdx = syncPinnedBallToPointer(objectsRef.current, dragStateRef.current, lastPos.current);
 
       while (accumulatorRef.current >= FIXED_TIMESTEP) {
         for (let s = 0; s < Math.max(1, config.substeps); s++) {
@@ -611,7 +553,7 @@ export default function App() {
 
     animationId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animationId);
-  }, [drawDebugOverlay, drawFlow, drawGrid, drawHeatmap, drawStreamlines, getGravityAt, resolveCollisions]);
+  }, [drawDebugOverlay, drawFlow, drawGrid, drawHeatmap, drawStreamlines, getGravityAt]);
 
   const handleStart = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.preventDefault();
@@ -621,6 +563,8 @@ export default function App() {
     if (!rect) return;
     const p = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     lastPos.current = p;
+    pointerHistoryRef.current = [];
+    recordPointerHistory(pointerHistoryRef.current, p, e.timeStamp);
 
     for (const pt of portals) {
       if (Math.hypot(pt.handle.x - p.x, pt.handle.y - p.y) < 30) {
@@ -654,6 +598,7 @@ export default function App() {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     const p = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    recordPointerHistory(pointerHistoryRef.current, p, e.timeStamp);
 
     if (currentDragState.type === 'portal' || currentDragState.type === 'handle') {
       const updatedPortals = portals.map(pt => {
@@ -678,6 +623,9 @@ export default function App() {
 
   const handleEnd = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (activePointerId.current !== null && e.pointerId !== activePointerId.current) return;
+    const canceled = e.type === 'pointercancel';
+    applyPointerReleaseVelocity(objectsRef.current, dragStateRef.current, pointerHistoryRef.current, canceled, e.timeStamp);
+    pointerHistoryRef.current = [];
     activePointerId.current = null;
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
@@ -692,6 +640,7 @@ export default function App() {
       const rect = canvasRef.current?.getBoundingClientRect();
       if (!rect) return;
       const p = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      recordPointerHistory(pointerHistoryRef.current, p, event.timeStamp);
 
       if (currentDragState.type === 'portal' || currentDragState.type === 'handle') {
         const updatedPortals = portals.map(pt => {
@@ -715,6 +664,9 @@ export default function App() {
 
     const onWindowPointerEnd = (event: PointerEvent) => {
       if (activePointerId.current === null || event.pointerId !== activePointerId.current) return;
+      const canceled = event.type === 'pointercancel';
+      applyPointerReleaseVelocity(objectsRef.current, dragStateRef.current, pointerHistoryRef.current, canceled, event.timeStamp);
+      pointerHistoryRef.current = [];
       activePointerId.current = null;
       updateDragState({ id: null, type: null });
     };

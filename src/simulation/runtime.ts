@@ -1,20 +1,19 @@
 import type { Point, Portal } from './types';
 import { PORTAL_EDGE_RADIUS, TRAVERSAL_EPSILON } from './constants';
 import { computeGravityAt, type FieldConfig } from './fieldSolver';
-import { dot, mapPointThroughPortal, mapVelocityThroughPortal, worldPointToPortalLocal } from './portalTransform';
+import { dot, mapPointThroughPortal, mapVelocityThroughPortal, normalize, worldPointToPortalLocal } from './portalTransform';
+import { getUsablePortalHalfWidth, isWithinPortalAperture } from './portalTraversal';
 import type { Ball } from './Ball';
 
 export type StepWorld = FieldConfig & { width: number; height: number; portals: Portal[]; friction: number; bounce: number; twoSided: boolean };
 export const NUMERICAL_CLEARANCE = 0.1;
 export const portalRimRadius = PORTAL_EDGE_RADIUS;
-export const usablePortalHalfWidth = (portal: Portal, bodyRadius: number, rimRadius = PORTAL_EDGE_RADIUS, clearance = NUMERICAL_CLEARANCE) => portal.width / 2 - bodyRadius - rimRadius - clearance;
-export const canBodyTraverseAperture = (local: { along: number }, portal: Portal, bodyRadius: number) => {
-  const usable = usablePortalHalfWidth(portal, bodyRadius);
-  return usable >= 0 && Math.abs(local.along) <= usable + 1e-9;
-};
+export const usablePortalHalfWidth = getUsablePortalHalfWidth;
+export const canBodyTraverseAperture = (local: { along: number }, portal: Portal, bodyRadius: number) => isWithinPortalAperture(local, portal, bodyRadius);
 
-type Event = { type: 'portal'; t: number; entry: Portal; exit: Portal; point: Point; local: { along: number; normal: number }; fromFront: boolean } | { type: 'wall'; t: number; normal: Point } | { type: 'rim'; t: number; normal: Point; point: Point; portal: Portal };
+type Event = { type: 'portal'; t: number; entry: Portal; exit: Portal; point: Point; local: { along: number; normal: number }; fromFront: boolean } | { type: 'wall'; t: number; normal: Point } | { type: 'rim'; t: number; normal: Point; point: Point; portal?: Portal };
 const EPS_T = 1e-7;
+const OVERLAP_EPS = 1e-5;
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
 function crossingEvent(body: Ball, p0: Point, p1: Point, world: StepWorld, ignore?: { portalId: string; side: number } | null): Event | null {
@@ -35,8 +34,10 @@ function crossingEvent(body: Ball, p0: Point, p1: Point, world: StepWorld, ignor
       if (!canBodyTraverseAperture(local, entry, body.radius)) continue;
       const ev: Event = { type: 'portal', t, entry, exit, point, local, fromFront };
       if (!best || ev.t < best.t) best = ev;
-    } else if (Math.abs(local.along) <= entry.width / 2 - body.radius) {
-      const ev: Event = { type: 'rim', t, normal: entry.normal, point, portal: entry };
+    } else if (Math.abs(local.along) <= usablePortalHalfWidth(entry, body.radius)) {
+      // A one-sided back-face collision is a wall whose outward normal points
+      // back toward the blocked side, opposite the portal's front normal.
+      const ev: Event = { type: 'rim', t, normal: { x: -entry.normal.x, y: -entry.normal.y }, point, portal: entry };
       if (!best || ev.t < best.t) best = ev;
     }
   }
@@ -61,17 +62,34 @@ function rimEvent(body: Ball, p0: Point, p1: Point, world: StepWorld): Event | n
     const r = body.radius + PORTAL_EDGE_RADIUS;
     const ox = p0.x - center.x, oy = p0.y - center.y;
     const A = dot(v, v), B = 2 * (ox * v.x + oy * v.y), C = ox * ox + oy * oy - r * r;
+    if (C <= 0) {
+      const outward = normalize({ x: ox || -v.x || portal.normal.x, y: oy || -v.y || portal.normal.y });
+      const incoming = body.vx * outward.x + body.vy * outward.y < 0;
+      if (incoming || C < -OVERLAP_EPS) {
+        const ev: Event = { type: 'rim', t: 0, normal: outward, point: p0, portal };
+        if (!best || ev.t < best.t) best = ev;
+      }
+      continue;
+    }
     const disc = B * B - 4 * A * C; if (A <= 0 || disc < 0) continue;
     const t = (-B - Math.sqrt(disc)) / (2 * A);
     if (t >= EPS_T && t <= 1) {
       const point = { x: p0.x + v.x * t, y: p0.y + v.y * t };
-      const normal = { x: (point.x - center.x) / r, y: (point.y - center.y) / r };
+      const normal = normalize({ x: point.x - center.x, y: point.y - center.y });
       const ev: Event = { type: 'rim', t, normal, point, portal };
       if (!best || ev.t < best.t) best = ev;
     }
   }
   return best;
 }
+
+const applyAccelerationAndFriction = (body: Ball, dt: number, world: StepWorld) => {
+  if (dt <= 0) return;
+  const g = computeGravityAt(body.x, body.y, world.portals, world);
+  const f = Math.pow(world.friction, dt * 60);
+  body.vx = body.vx * f + g.x * dt;
+  body.vy = body.vy * f + g.y * dt;
+};
 
 const reflectVelocity = (body: Ball, normal: Point, bounce: number) => {
   const vn = body.vx * normal.x + body.vy * normal.y;
@@ -82,15 +100,24 @@ export function stepBodyContinuous(body: Ball, fixedDt: number, world: StepWorld
   let remaining = fixedDt; let guard = 0; let ignore: { portalId: string; side: number } | null = body.lastExit ?? null;
   body.oldX = body.x; body.oldY = body.y;
   while (remaining > 1e-7 && guard++ < 12) {
+    const startV = { x: body.vx, y: body.vy };
     const g = computeGravityAt(body.x, body.y, world.portals, world);
-    const f = Math.pow(world.friction, remaining * 60);
-    body.vx = body.vx * f + g.x * remaining; body.vy = body.vy * f + g.y * remaining;
-    const p0 = { x: body.x, y: body.y }, p1 = { x: body.x + body.vx * remaining, y: body.y + body.vy * remaining };
+    const predictedV = { x: body.vx * Math.pow(world.friction, remaining * 60) + g.x * remaining, y: body.vy * Math.pow(world.friction, remaining * 60) + g.y * remaining };
+    const avgV = { x: (startV.x + predictedV.x) * 0.5, y: (startV.y + predictedV.y) * 0.5 };
+    const p0 = { x: body.x, y: body.y }, p1 = { x: body.x + avgV.x * remaining, y: body.y + avgV.y * remaining };
     const events = [crossingEvent(body, p0, p1, world, ignore), rimEvent(body, p0, p1, world), wallEvent(body, p0, p1, world)].filter(Boolean) as Event[];
     const ev = events.sort((a,b)=>a.t-b.t)[0];
-    if (!ev) { body.x = p1.x; body.y = p1.y; break; }
-    const dtEvent = Math.max(0, remaining * clamp01(ev.t));
-    body.x = p0.x + (p1.x - p0.x) * clamp01(ev.t); body.y = p0.y + (p1.y - p0.y) * clamp01(ev.t);
+    if (!ev) {
+      applyAccelerationAndFriction(body, remaining, world);
+      body.x += body.vx * remaining;
+      body.y += body.vy * remaining;
+      break;
+    }
+    const eventFraction = clamp01(ev.t);
+    const dtEvent = remaining * eventFraction;
+    applyAccelerationAndFriction(body, dtEvent, world);
+    body.x = p0.x + (p1.x - p0.x) * eventFraction;
+    body.y = p0.y + (p1.y - p0.y) * eventFraction;
     remaining -= dtEvent;
     if (ev.type === 'portal') {
       body.addTrailPoint(true);
@@ -105,7 +132,8 @@ export function stepBodyContinuous(body: Ball, fixedDt: number, world: StepWorld
       ignore = body.lastExit;
     } else {
       reflectVelocity(body, ev.normal, world.bounce);
-      body.x += ev.normal.x * TRAVERSAL_EPSILON; body.y += ev.normal.y * TRAVERSAL_EPSILON;
+      body.x += ev.normal.x * TRAVERSAL_EPSILON;
+      body.y += ev.normal.y * TRAVERSAL_EPSILON;
       body.lastExit = null; ignore = null;
     }
   }
