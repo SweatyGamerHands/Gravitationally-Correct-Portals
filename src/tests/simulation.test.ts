@@ -96,27 +96,27 @@ test('explicit velocity integration uses seconds for velocity and acceleration',
   assert.ok(Math.abs(nextPosition.y - 2 / 15) < 1e-9);
 });
 
-test('crossing near aperture edge includes ball radius overlap but rejects clear misses', () => {
+test('crossing eligibility uses center within aperture and leaves radius overlap to rim collision', () => {
   const portal = portals[0];
   const radius = 10;
 
   for (const side of [1, -1]) {
     const edgeX = portal.x + side * portal.width / 2;
-    const overlappingEdge = getCrossingIntersection(
+    const overlappingRim = getCrossingIntersection(
       { x: edgeX + side * (radius - 0.5), y: portal.y - 20 },
       { x: edgeX + side * (radius - 0.5), y: portal.y + 20 },
       portal,
       radius,
     );
-    assert.ok(overlappingEdge);
+    assert.equal(overlappingRim, null);
 
-    const outsideEdge = getCrossingIntersection(
-      { x: edgeX + side * (radius + 0.5), y: portal.y - 20 },
-      { x: edgeX + side * (radius + 0.5), y: portal.y + 20 },
+    const justInside = getCrossingIntersection(
+      { x: edgeX - side * 0.5, y: portal.y - 20 },
+      { x: edgeX - side * 0.5, y: portal.y + 20 },
       portal,
       radius,
     );
-    assert.equal(outsideEdge, null);
+    assert.ok(justInside);
   }
 });
 

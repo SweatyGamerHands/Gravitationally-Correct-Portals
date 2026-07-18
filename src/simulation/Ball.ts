@@ -41,7 +41,7 @@ export class Ball {
     this.oldX = this.x;
     this.oldY = this.y;
     
-    // Strict Verlet Integration using absolute seconds
+    // Semi-implicit Euler integration using absolute seconds
     const frictionSub = Math.pow(friction, dt * 60); 
     this.vx = vx * frictionSub + g.x * dt;
     this.vy = vy * frictionSub + g.y * dt;
@@ -190,7 +190,7 @@ export class Ball {
     this.x += correctionX;
     this.y += correctionY;
 
-    // Preserve full Verlet velocity when the correction is not fighting deeper
+    // Preserve full tangential velocity when the correction is not fighting deeper
     // penetration. Only drop the incoming normal component when penetration is
     // actually increasing; tangential motion is always preserved.
     if (vNormal > 0) {
@@ -327,13 +327,15 @@ export class Ball {
     const cloneX = exit.x + dLoc * exit.dir.x - nLoc * exit.normal.x;
     const cloneY = exit.y + dLoc * exit.dir.y - nLoc * exit.normal.y;
 
+    const worldTransform = ctx.getTransform();
+
     ctx.save();
     ctx.beginPath();
     ctx.translate(entry.x, entry.y);
     ctx.rotate(entry.angle);
     ctx.rect(-2000, isFront ? 0 : -2000, 4000, 2000); 
     ctx.clip();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.setTransform(worldTransform);
     this.renderBody(ctx, this.x, this.y, heat);
     ctx.restore();
 
@@ -343,7 +345,7 @@ export class Ball {
     ctx.rotate(exit.angle);
     ctx.rect(-2000, isFront ? -2000 : 0, 4000, 2000); 
     ctx.clip();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.setTransform(worldTransform);
     this.renderBody(ctx, cloneX, cloneY, heat);
     ctx.restore();
   }

@@ -1,6 +1,6 @@
 import type { Point, Portal } from './types';
 import { BASE_G, DEFAULT_FIELD_CLAMP, DEFAULT_FIELD_MAX_DEPTH } from './constants';
-import { mag, mapAccelerationThroughPortal, scale, worldPointToPortalLocal } from './portalTransform';
+import { mag, mapAccelerationThroughPortal, mapPointThroughPortal, scale, worldPointToPortalLocal } from './portalTransform';
 
 export type FieldConfig = { vacuum?: boolean; gravity: number; correctGravity?: boolean; portalPull?: number; twoSided?: boolean; maxDepth?: number; fieldClamp?: number };
 export type FieldSample = { acceleration: Point; directWeight: number; portalWeight: number; contributions: { portalId: string; depth: number; weight: number; vector: Point }[] };
@@ -47,7 +47,7 @@ export const sampleField = (point: Point, portals: Portal[], config: FieldConfig
       totalPortalWeight += branchWeight;
       ax += transported.x * branchWeight;
       ay += transported.y * branchWeight;
-      if (depth + 1 < maxDepth && !path.includes(exit.id)) visit(p, transported, depth + 1, attenuation * w * 0.5, [...path, entry.id, exit.id]);
+      if (depth + 1 < maxDepth && !path.includes(exit.id)) visit(mapPointThroughPortal(p, entry, exit), transported, depth + 1, attenuation * w * 0.5, [...path, entry.id, exit.id]);
     });
   };
   visit(point, base, 0, 1, []);
@@ -55,7 +55,7 @@ export const sampleField = (point: Point, portals: Portal[], config: FieldConfig
   const directWeight = 1 - portalOcclusion;
   const denom = directWeight + totalPortalWeight || 1;
   let acceleration = { x: (base.x * directWeight + ax) / denom, y: (base.y * directWeight + ay) / denom };
-  const m = mag(acceleration); const max = config.fieldClamp ?? DEFAULT_FIELD_CLAMP;
+  const m = mag(acceleration); const max = Math.max(config.fieldClamp ?? DEFAULT_FIELD_CLAMP, mag(base));
   if (m > max) acceleration = scale(acceleration, max / m);
   return { acceleration, directWeight: directWeight / denom, portalWeight: totalPortalWeight / denom, contributions };
 };
