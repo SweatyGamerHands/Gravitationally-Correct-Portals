@@ -59,6 +59,8 @@ Portal crossings are swept from previous to proposed positions. The earliest pla
 
 Rim geometry is treated as circular endcaps at the aperture endpoints. Traversal requires the entire body to clear those endcaps. Both traversal and rim impacts use swept time-of-impact tests, so a fast body cannot tunnel through a rim between fixed steps.
 
+Portal placement and rotation are kinematic editor operations rather than simulated portal motion. While either endpoint is being dragged, traversal and split-body rendering are disabled for that reciprocal pair, and the moving endpoint does not collide with bodies. On release, a body intersecting the edited aperture is translated to the nearest clear side, its incoming normal velocity is removed, and its tangential velocity is preserved. This prevents an editor gesture from manufacturing a crossing or a high-energy collision.
+
 ## Visualization strategy
 
 Field arrows, heatmap, streamlines, grid distortion, trajectory-related calculations, and body acceleration all sample `computeGravityAt`. The grid is presented as a field-distortion visualization, not a literal spacetime metric. Streamlines are seeded near portal mouths and integrated with RK4 through the same vector field.
@@ -66,6 +68,8 @@ Field arrows, heatmap, streamlines, grid distortion, trajectory-related calculat
 ## Mobile and performance
 
 The canvas is sized in CSS pixels for physics and rendered at bounded `devicePixelRatio` for Retina crispness. Visualization quality is deliberately low-resolution for heatmaps and sparse for streamlines so the authoritative physics remains stable on mobile Safari.
+
+New bodies are placed into the first collision-free launch slot instead of sharing one exact coordinate. The UI caps the population at 64 because the circle-circle collision pass is quadratic in body count.
 
 ## Known limitations
 
