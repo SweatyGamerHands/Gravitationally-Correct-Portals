@@ -3,10 +3,13 @@ import assert from 'node:assert/strict';
 import {
   apertureVisibilityWeight,
   computeGravityAt,
+  DEFAULT_TWO_SIDED,
   findAvailableBallSpawn,
   getBaselineG,
   getCrossingIntersection,
   getLinkedPortal,
+  getMovingPortalBackFaceContact,
+  getMovingPortalPlaneCrossing,
   getPinnedBallIndex,
   getPortalLocal,
   getPortalSegmentCollision,
@@ -21,9 +24,12 @@ import {
   mapPointThroughPortal,
   mapVelocityThroughPortal,
   MAX_BALLS,
+  PORTAL_EDGE_RADIUS,
+  interpolatePortalPose,
   movePortalForEditor,
+  resolveMovingPortalSweeps,
   sampleField,
-  separateBodyFromEditedPortal,
+  shortestAngleDelta,
 } from '../simulation/physics';
 import { withPortalVectors, type Point } from '../simulation/types';
 import { Ball } from '../simulation/Ball';
@@ -36,6 +42,10 @@ const portals = [
 test('baseline gravity ignores vacuum mode', () => {
   assert.equal(getBaselineG(false, 1), 800);
   assert.equal(getBaselineG(true, 1), 800);
+});
+
+test('portals default to one-sided entry', () => {
+  assert.equal(DEFAULT_TWO_SIDED, false);
 });
 
 test('portal transform flips normal component', () => {
@@ -109,16 +119,16 @@ test('crossing eligibility requires the full ball to clear the solid rim', () =>
   for (const side of [1, -1]) {
     const edgeX = portal.x + side * portal.width / 2;
     const overlappingRim = getCrossingIntersection(
-      { x: edgeX + side * (radius - 0.5), y: portal.y - 20 },
-      { x: edgeX + side * (radius - 0.5), y: portal.y + 20 },
+      { x: edgeX + side * (radius + PORTAL_EDGE_RADIUS - 0.5), y: portal.y - 20 },
+      { x: edgeX + side * (radius + PORTAL_EDGE_RADIUS - 0.5), y: portal.y + 20 },
       portal,
       radius,
     );
     assert.equal(overlappingRim, null);
 
     const justInside = getCrossingIntersection(
-      { x: edgeX - side * (radius + 1.5), y: portal.y - 20 },
-      { x: edgeX - side * (radius + 1.5), y: portal.y + 20 },
+      { x: edgeX - side * (radius + PORTAL_EDGE_RADIUS + 0.5), y: portal.y - 20 },
+      { x: edgeX - side * (radius + PORTAL_EDGE_RADIUS + 0.5), y: portal.y + 20 },
       portal,
       radius,
     );
@@ -131,12 +141,12 @@ test('grazing an aperture endcap collides with portal edge capsule', () => {
   const radius = 10;
   const edgeX = portal.x + portal.width / 2;
 
-  const grazingHit = getPortalSegmentCollision({ x: edgeX + radius + 0.5, y: portal.y }, radius, portal);
+  const grazingHit = getPortalSegmentCollision({ x: edgeX + radius + PORTAL_EDGE_RADIUS - 0.5, y: portal.y }, radius, portal);
   assert.ok(grazingHit);
   assert.ok(grazingHit.overlap > 0);
   assert.ok(grazingHit.normal.x > 0);
 
-  const clearMiss = getPortalSegmentCollision({ x: edgeX + radius + 2, y: portal.y }, radius, portal);
+  const clearMiss = getPortalSegmentCollision({ x: edgeX + radius + PORTAL_EDGE_RADIUS + 1, y: portal.y }, radius, portal);
   assert.equal(clearMiss, null);
 });
 
@@ -158,7 +168,7 @@ test('swept rim collision detects a ball that tunnels past an endpoint', () => {
 test('back-face approach outside aperture is not eligible for support or crossing', () => {
   const portal = portals[0];
   const radius = 10;
-  const outsideX = portal.x + portal.width / 2 + radius + 0.5;
+  const outsideX = portal.x + portal.width / 2 + radius + PORTAL_EDGE_RADIUS + 0.5;
   const backFacePoint = { x: outsideX, y: portal.y - radius / 2 };
   const local = getPortalLocal(backFacePoint, portal);
 
@@ -224,7 +234,7 @@ test('wall collision updates explicit velocity', () => {
 test('endpoint collision updates explicit velocity', () => {
   const portal = portals[0];
   const edgeX = portal.x + portal.width / 2;
-  const ball = new Ball(edgeX + 10.5, portal.y, 10, 1);
+  const ball = new Ball(edgeX + 10 + PORTAL_EDGE_RADIUS - 0.5, portal.y, 10, 1);
   ball.vx = -100;
 
   ball.constrain(500, 500, [portal], 0.5, true);
@@ -353,39 +363,89 @@ test('rim-overlapping balls are not dual-rendered as successful traversals', () 
   assert.equal(dualDraws, 0);
 });
 
-test('an edited portal pair cannot teleport or split-render a body', () => {
-  const crossingBall = new Ball(portals[0].x, portals[0].y - 40, 5, 1);
-  crossingBall.oldX = crossingBall.x;
-  crossingBall.oldY = crossingBall.y;
-  crossingBall.y = portals[0].y + 40;
-  crossingBall.vy = 9600;
+test('a moving one-sided portal teleports a stationary body swept from its front', () => {
+  const entryFrom = withPortalVectors({ ...portals[0], y: 80 });
+  const entryTo = withPortalVectors({ ...portals[0], y: 120 });
+  const ball = new Ball(100, 100, 5, 1);
+  ball.trail = [{ x: 100, y: 100 }];
 
-  crossingBall.checkCrossing(portals, true, 0.5, portals[1].id);
+  const result = resolveMovingPortalSweeps(
+    [ball],
+    [entryFrom, portals[1]],
+    [entryTo, portals[1]],
+    { duration: 1, twoSided: false, bounce: 0.5 },
+  );
 
-  assert.equal(crossingBall.x, portals[0].x);
-  assert.equal(crossingBall.y, portals[0].y + 40);
-  assert.equal(crossingBall.cooldown, 0);
-
-  const overlapBall = new Ball(portals[0].x, portals[0].y + 2, 10, 1);
-  let bodyDraws = 0;
-  let dualDraws = 0;
-  overlapBall.renderBody = () => { bodyDraws++; };
-  overlapBall.renderDual = () => { dualDraws++; };
-  overlapBall.drawTrail = () => undefined;
-  overlapBall.draw({} as CanvasRenderingContext2D, 1, portals, true, portals[1].id);
-
-  assert.equal(bodyDraws, 1);
-  assert.equal(dualDraws, 0);
+  assert.deepEqual(result, { teleported: 1, blocked: 0, rimImpacts: 0 });
+  nearly(ball.x, portals[1].x);
+  nearly(ball.y, portals[1].y - 0.75);
+  nearly(ball.vx, 0);
+  nearly(ball.vy, -40);
+  assert.equal(ball.cooldown, 1 / 30);
+  assert.deepEqual(ball.trail, []);
+  assert.deepEqual({ x: ball.oldX, y: ball.oldY }, { x: ball.x, y: ball.y });
 });
 
-test('the actively edited portal is non-colliding until release', () => {
-  const portal = portals[0];
-  const ball = new Ball(portal.x + portal.width / 2, portal.y, 10, 1);
-  const before = { x: ball.x, y: ball.y };
+test('a one-sided portal back sweep pushes instead of teleporting', () => {
+  const entryFrom = withPortalVectors({ ...portals[0], y: 120 });
+  const entryTo = withPortalVectors({ ...portals[0], y: 80 });
+  const ball = new Ball(100, 100, 10, 1);
+  const contact = getMovingPortalBackFaceContact(ball, entryFrom, entryTo);
 
-  ball.constrain(500, 500, portals, 0.5, true, portal.id);
+  assert.ok(contact);
+  nearly(contact.t, 0.2225, 1e-6);
 
-  assert.deepEqual({ x: ball.x, y: ball.y }, before);
+  const result = resolveMovingPortalSweeps(
+    [ball],
+    [entryFrom, portals[1]],
+    [entryTo, portals[1]],
+    { duration: 1, twoSided: false, bounce: 0.5 },
+  );
+
+  assert.deepEqual(result, { teleported: 0, blocked: 1, rimImpacts: 0 });
+  nearly(ball.x, 100);
+  nearly(ball.y, 68.899);
+  nearly(ball.vx, 0);
+  nearly(ball.vy, -60);
+  assert.equal(ball.cooldown, 0);
+});
+
+test('an already intersecting one-sided back plate cannot phase through a body', () => {
+  const entryFrom = withPortalVectors({ ...portals[0], y: 100 });
+  const entryTo = withPortalVectors({ ...portals[0], y: 90 });
+  const ball = new Ball(100, 100, 10, 1);
+
+  const contact = getMovingPortalBackFaceContact(ball, entryFrom, entryTo);
+  assert.ok(contact);
+  assert.equal(contact.t, 0);
+  const result = resolveMovingPortalSweeps(
+    [ball],
+    [entryFrom, portals[1]],
+    [entryTo, portals[1]],
+    { duration: 1, twoSided: false, bounce: 0.5 },
+  );
+
+  assert.equal(result.blocked, 1);
+  nearly(ball.y, 78.899);
+  assert.ok(ball.vy < 0);
+});
+
+test('two-sided mode permits the same reverse moving-mouth traversal', () => {
+  const entryFrom = withPortalVectors({ ...portals[0], y: 120 });
+  const entryTo = withPortalVectors({ ...portals[0], y: 80 });
+  const ball = new Ball(100, 100, 5, 1);
+
+  const result = resolveMovingPortalSweeps(
+    [ball],
+    [entryFrom, portals[1]],
+    [entryTo, portals[1]],
+    { duration: 1, twoSided: true, bounce: 0.5 },
+  );
+
+  assert.deepEqual(result, { teleported: 1, blocked: 0, rimImpacts: 0 });
+  nearly(ball.x, portals[1].x);
+  nearly(ball.y, portals[1].y + 0.75);
+  nearly(ball.vy, 40);
 });
 
 test('portal editor movement is immutable and rebuilds its coordinate frame', () => {
@@ -405,32 +465,126 @@ test('portal editor movement is immutable and rebuilds its coordinate frame', ()
   nearly(rotated[0].normal.y, 0);
 });
 
-test('portal edit finalization separates intersections without adding normal energy', () => {
-  const body = {
-    x: portals[0].x,
-    y: portals[0].y + 5,
-    oldX: 0,
-    oldY: 0,
-    radius: 10,
-    vx: 25,
-    vy: -40,
-    trail: [{ x: 0, y: 0 }],
-  };
+test('portal rotation sweeps the aperture and uses the shortest angular path', () => {
+  const entryFrom = withPortalVectors({ ...portals[0], angle: 0 });
+  const entryTo = withPortalVectors({ ...portals[0], angle: Math.PI / 2 });
+  const crossing = getMovingPortalPlaneCrossing(
+    { x: 110, y: 110, radius: 5 },
+    entryFrom,
+    entryTo,
+  );
 
-  assert.equal(separateBodyFromEditedPortal(body, portals[0]), true);
-  nearly(body.y, portals[0].y + 11.001);
-  assert.equal(body.vx, 25);
-  assert.equal(body.vy, 0);
-  assert.deepEqual({ x: body.oldX, y: body.oldY }, { x: body.x, y: body.y });
-  assert.deepEqual(body.trail, []);
+  assert.ok(crossing);
+  nearly(crossing.t, 0.5, 1e-6);
+  nearly(crossing.pose.angle, Math.PI / 4, 1e-6);
+  nearly(crossing.along, Math.sqrt(200), 1e-6);
+  assert.equal(crossing.fromFront, true);
+  nearly(shortestAngleDelta(Math.PI - 0.1, -Math.PI + 0.1), 0.2);
 
-  const atPlane = { x: portals[0].x, y: portals[0].y, oldX: 0, oldY: 0, radius: 10, vx: 0, vy: 40 };
-  assert.equal(separateBodyFromEditedPortal(atPlane, portals[0]), true);
-  nearly(atPlane.y, portals[0].y - 11.001);
-  assert.equal(atPlane.vy, 0);
+  const halfway = interpolatePortalPose(entryFrom, entryTo, 0.5);
+  nearly(halfway.angle, Math.PI / 4);
+  assert.deepEqual(halfway.handle, {
+    x: halfway.x + halfway.normal.x * 60,
+    y: halfway.y + halfway.normal.y * 60,
+  });
+});
 
-  const outsideAperture = { x: portals[0].x + 45, y: portals[0].y, oldX: 0, oldY: 0, radius: 10 };
-  assert.equal(separateBodyFromEditedPortal(outsideAperture, portals[0]), false);
+test('common entry and exit mouth motion cancels in the mapped body velocity', () => {
+  const from = [
+    withPortalVectors({ ...portals[0], y: 80 }),
+    withPortalVectors({ ...portals[1], y: 80 }),
+  ];
+  const to = [
+    withPortalVectors({ ...portals[0], y: 120 }),
+    withPortalVectors({ ...portals[1], y: 120 }),
+  ];
+  const ball = new Ball(100, 100, 5, 1);
+
+  const result = resolveMovingPortalSweeps([ball], from, to, {
+    duration: 1,
+    twoSided: false,
+    bounce: 0.5,
+  });
+
+  assert.equal(result.teleported, 1);
+  nearly(ball.vx, 0);
+  nearly(ball.vy, 0);
+  // Mapping happens at the crossing-time exit pose (y=100); the mouth then
+  // continues its kinematic motion without dragging the emerged body.
+  nearly(ball.y, 99.25);
+});
+
+test('a moving solid rim strikes a body when the aperture slides tangentially', () => {
+  const entryFrom = withPortalVectors({ id: 'rim-a', x: 0, y: 100, angle: 0, color: '#f90', width: 100 });
+  const entryTo = withPortalVectors({ ...entryFrom, x: 60 });
+  const exit = withPortalVectors({ id: 'rim-b', x: 300, y: 300, angle: Math.PI, color: '#09f', width: 100 });
+  const ball = new Ball(80, 100, 5, 1);
+
+  const result = resolveMovingPortalSweeps(
+    [ball],
+    [entryFrom, exit],
+    [entryTo, exit],
+    { duration: 1, twoSided: true, bounce: 0.5 },
+  );
+
+  assert.deepEqual(result, { teleported: 0, blocked: 0, rimImpacts: 1 });
+  nearly(ball.vx, 90);
+  nearly(ball.vy, 0);
+});
+
+test('a moving rim blocks a near-edge plane sweep that lacks full-body clearance', () => {
+  const entryFrom = withPortalVectors({ ...portals[0], y: 80 });
+  const entryTo = withPortalVectors({ ...portals[0], y: 120 });
+  const ball = new Ball(137, 100, 10, 1);
+
+  assert.equal(getMovingPortalPlaneCrossing(ball, entryFrom, entryTo), null);
+  const result = resolveMovingPortalSweeps(
+    [ball],
+    [entryFrom, portals[1]],
+    [entryTo, portals[1]],
+    { duration: 1, twoSided: true, bounce: 0.5 },
+  );
+
+  assert.deepEqual(result, { teleported: 0, blocked: 0, rimImpacts: 1 });
+  assert.equal(ball.cooldown, 0);
+  assert.ok(Math.hypot(ball.vx, ball.vy) > 0);
+});
+
+test('teleport cooldown suppresses a repeated moving-mouth traversal', () => {
+  const entryFrom = withPortalVectors({ ...portals[0], y: 80 });
+  const entryTo = withPortalVectors({ ...portals[0], y: 120 });
+  const ball = new Ball(100, 100, 5, 1);
+  ball.cooldown = 0.01;
+
+  const result = resolveMovingPortalSweeps(
+    [ball],
+    [entryFrom, portals[1]],
+    [entryTo, portals[1]],
+    { duration: 1, twoSided: false, bounce: 0.5 },
+  );
+
+  assert.deepEqual(result, { teleported: 0, blocked: 0, rimImpacts: 0 });
+  assert.deepEqual({ x: ball.x, y: ball.y, vx: ball.vx, vy: ball.vy }, { x: 100, y: 100, vx: 0, vy: 0 });
+});
+
+test('a portal sweep teleports every aperture-clear body in a pile exactly once', () => {
+  const entryFrom = withPortalVectors({ ...portals[0], y: 80 });
+  const entryTo = withPortalVectors({ ...portals[0], y: 120 });
+  const balls = Array.from({ length: 7 }, (_, index) => new Ball(70 + index * 10, 100, 3, 1));
+
+  const result = resolveMovingPortalSweeps(
+    balls,
+    [entryFrom, portals[1]],
+    [entryTo, portals[1]],
+    { duration: 0.1, twoSided: false, bounce: 0.5 },
+  );
+
+  assert.deepEqual(result, { teleported: 7, blocked: 0, rimImpacts: 0 });
+  assert.equal(new Set(balls.map(ball => ball.x.toFixed(6))).size, balls.length);
+  balls.forEach(ball => {
+    assert.ok(Number.isFinite(ball.x) && Number.isFinite(ball.y));
+    assert.equal(ball.cooldown, 1 / 30);
+  });
 });
 
 test('rapid ball creation uses separated launch slots and respects the safety cap', () => {

@@ -59,7 +59,9 @@ Portal crossings are swept from previous to proposed positions. The earliest pla
 
 Rim geometry is treated as circular endcaps at the aperture endpoints. Traversal requires the entire body to clear those endcaps. Both traversal and rim impacts use swept time-of-impact tests, so a fast body cannot tunnel through a rim between fixed steps.
 
-Portal placement and rotation are kinematic editor operations rather than simulated portal motion. While either endpoint is being dragged, traversal and split-body rendering are disabled for that reciprocal pair, and the moving endpoint does not collide with bodies. On release, a body intersecting the edited aperture is translated to the nearest clear side, its incoming normal velocity is removed, and its tangential velocity is preserved. This prevents an editor gesture from manufacturing a crossing or a high-energy collision.
+Portal placement and rotation are kinematic mouth motion. Each pointer update sweeps the finite portal segment from its prior pose to its new pose, including the shortest angular interpolation. A body whose center changes portal-local side inside the full-body aperture is traversed even when the body itself is stationary. In one-sided mode, only relative front-to-back crossings traverse; a back-to-front sweep is a collision with the solid back plate. Moving aperture endpoints are swept as solid circular rims and take priority over a simultaneous plane crossing.
+
+Velocity transfer is evaluated in the instantaneous portal frames. The entry mouth's translational and angular point velocity is subtracted from the body velocity, that relative velocity is mapped through the canonical portal transform, and the linked exit point velocity is added. A moving mouth can therefore exchange energy and momentum with a body, as a kinematic boundary should. The UI defaults to one-sided mouths and exposes the two-sided toggle explicitly.
 
 ## Visualization strategy
 
@@ -77,3 +79,5 @@ New bodies are placed into the first collision-free launch slot instead of shari
 - Portals are ideal zero-thickness apertures with simplified rim collision geometry.
 - Recursive gravity branches are depth-limited for determinism and performance.
 - Multiple dynamic rigid bodies use circle approximations rather than full rigid-body rotation.
+- Portal motion is sampled at pointer updates, follows the shortest angular path between samples, and resolves the earliest event per body per sample.
+- Body motion and mouth motion use separate swept update streams rather than one globally coupled time-of-impact solve.

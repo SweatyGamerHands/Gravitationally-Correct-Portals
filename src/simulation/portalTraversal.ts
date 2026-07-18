@@ -10,7 +10,7 @@ export const isWithinPortalAperture = (local: { along: number }, portal: Portal,
 
 // Portals are stored as adjacent reciprocal pairs: [A, B, C, D] means
 // A <-> B and C <-> D. An unpaired final portal is intentionally inert.
-export const getLinkedPortal = (portals: Portal[], index: number): Portal | null => {
+export const getLinkedPortal = (portals: readonly Portal[], index: number): Portal | null => {
   const linkedIndex = index % 2 === 0 ? index + 1 : index - 1;
   return portals[linkedIndex] ?? null;
 };
