@@ -63,7 +63,7 @@ export class Ball {
     }
   }
 
-  checkCrossing(portals: Portal[], twoSided: boolean, bounce: number) {
+  checkCrossing(portals: Portal[], twoSided: boolean, bounce: number, editedPortalId: string | null = null) {
     const oldPos = { x: this.oldX, y: this.oldY };
     const proposed = { x: this.x, y: this.y };
     let selected: PortalEvent | null = null;
@@ -84,11 +84,14 @@ export class Ball {
 
     for (let i = 0; i < portals.length; i++) {
       const entry = portals[i];
-      const rimHit = getSweptPortalRimCollision(oldPos, proposed, this.radius, entry);
-      if (rimHit) consider({ kind: 'rim', t: rimHit.t, hit: rimHit });
+      if (entry.id !== editedPortalId) {
+        const rimHit = getSweptPortalRimCollision(oldPos, proposed, this.radius, entry);
+        if (rimHit) consider({ kind: 'rim', t: rimHit.t, hit: rimHit });
+      }
 
       const exit = getLinkedPortal(portals, i);
-      if (this.cooldown <= 0 && exit) {
+      const pairIsBeingEdited = entry.id === editedPortalId || exit?.id === editedPortalId;
+      if (this.cooldown <= 0 && exit && !pairIsBeingEdited) {
         const crossing = getCrossingIntersection(oldPos, proposed, entry, this.radius);
         if (crossing) consider({ kind: 'crossing', t: crossing.t, entry, exit, crossing });
       }
@@ -135,7 +138,7 @@ export class Ball {
     this.oldY = this.y;
   }
 
-  constrain(width: number, height: number, portals: Portal[], bounce: number, twoSided: boolean) {
+  constrain(width: number, height: number, portals: Portal[], bounce: number, twoSided: boolean, editedPortalId: string | null = null) {
     // 1. Boundaries
     const margin = this.radius;
     if (this.y > height - margin) { this.y = height - margin; if (this.vy > 0) this.vy = -this.vy * bounce; this.oldX = this.x; this.oldY = this.y; }
@@ -145,6 +148,7 @@ export class Ball {
 
     // 2. Portal Statics (Endcaps and Persistent Blocked-Face Support)
     for (const p1 of portals) {
+        if (p1.id === editedPortalId) continue;
         const rimCollision = getPortalRimCollision({ x: this.x, y: this.y }, this.radius, p1);
         if (rimCollision) {
           let { x: nx, y: ny } = rimCollision.normal;
@@ -242,7 +246,7 @@ export class Ball {
     this.cooldown = TELEPORT_COOLDOWN_SECONDS;
   }
 
-  draw(ctx: CanvasRenderingContext2D, trailIntensity: number, portals: Portal[], twoSided: boolean) {
+  draw(ctx: CanvasRenderingContext2D, trailIntensity: number, portals: Portal[], twoSided: boolean, editedPortalId: string | null = null) {
     const speedSq = this.vx * this.vx + this.vy * this.vy;
     const heat = Math.min(1, speedSq / 720000);
     
@@ -252,7 +256,7 @@ export class Ball {
     for (let i = 0; i < portals.length; i++) {
         const p = portals[i];
         const exit = getLinkedPortal(portals, i);
-        if (!exit) continue;
+        if (!exit || p.id === editedPortalId || exit.id === editedPortalId) continue;
         const distAlong = (this.x - p.x) * p.dir.x + (this.y - p.y) * p.dir.y;
         if (isWithinPortalAperture({ along: distAlong }, p, this.radius)) {
             const d = (this.x - p.x) * p.normal.x + (this.y - p.y) * p.normal.y;

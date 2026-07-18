@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   apertureVisibilityWeight,
   computeGravityAt,
+  findAvailableBallSpawn,
   getBaselineG,
   getCrossingIntersection,
   getLinkedPortal,
@@ -19,7 +20,10 @@ import {
   transformThroughPortal,
   mapPointThroughPortal,
   mapVelocityThroughPortal,
+  MAX_BALLS,
+  movePortalForEditor,
   sampleField,
+  separateBodyFromEditedPortal,
 } from '../simulation/physics';
 import { withPortalVectors, type Point } from '../simulation/types';
 import { Ball } from '../simulation/Ball';
@@ -347,6 +351,106 @@ test('rim-overlapping balls are not dual-rendered as successful traversals', () 
 
   assert.equal(bodyDraws, 1);
   assert.equal(dualDraws, 0);
+});
+
+test('an edited portal pair cannot teleport or split-render a body', () => {
+  const crossingBall = new Ball(portals[0].x, portals[0].y - 40, 5, 1);
+  crossingBall.oldX = crossingBall.x;
+  crossingBall.oldY = crossingBall.y;
+  crossingBall.y = portals[0].y + 40;
+  crossingBall.vy = 9600;
+
+  crossingBall.checkCrossing(portals, true, 0.5, portals[1].id);
+
+  assert.equal(crossingBall.x, portals[0].x);
+  assert.equal(crossingBall.y, portals[0].y + 40);
+  assert.equal(crossingBall.cooldown, 0);
+
+  const overlapBall = new Ball(portals[0].x, portals[0].y + 2, 10, 1);
+  let bodyDraws = 0;
+  let dualDraws = 0;
+  overlapBall.renderBody = () => { bodyDraws++; };
+  overlapBall.renderDual = () => { dualDraws++; };
+  overlapBall.drawTrail = () => undefined;
+  overlapBall.draw({} as CanvasRenderingContext2D, 1, portals, true, portals[1].id);
+
+  assert.equal(bodyDraws, 1);
+  assert.equal(dualDraws, 0);
+});
+
+test('the actively edited portal is non-colliding until release', () => {
+  const portal = portals[0];
+  const ball = new Ball(portal.x + portal.width / 2, portal.y, 10, 1);
+  const before = { x: ball.x, y: ball.y };
+
+  ball.constrain(500, 500, portals, 0.5, true, portal.id);
+
+  assert.deepEqual({ x: ball.x, y: ball.y }, before);
+});
+
+test('portal editor movement is immutable and rebuilds its coordinate frame', () => {
+  const original = portals[0];
+  const moved = movePortalForEditor(portals, original.id, 'portal', { x: 150, y: 175 });
+  assert.equal(original.x, 100);
+  assert.deepEqual({ x: moved[0].x, y: moved[0].y }, { x: 150, y: 175 });
+  assert.deepEqual(moved[0].handle, {
+    x: moved[0].x + moved[0].normal.x * 60,
+    y: moved[0].y + moved[0].normal.y * 60,
+  });
+  assert.equal(moved[1], portals[1]);
+
+  const rotated = movePortalForEditor(moved, original.id, 'handle', { x: 210, y: 175 });
+  nearly(rotated[0].angle, -Math.PI / 2);
+  nearly(rotated[0].normal.x, 1);
+  nearly(rotated[0].normal.y, 0);
+});
+
+test('portal edit finalization separates intersections without adding normal energy', () => {
+  const body = {
+    x: portals[0].x,
+    y: portals[0].y + 5,
+    oldX: 0,
+    oldY: 0,
+    radius: 10,
+    vx: 25,
+    vy: -40,
+    trail: [{ x: 0, y: 0 }],
+  };
+
+  assert.equal(separateBodyFromEditedPortal(body, portals[0]), true);
+  nearly(body.y, portals[0].y + 11.001);
+  assert.equal(body.vx, 25);
+  assert.equal(body.vy, 0);
+  assert.deepEqual({ x: body.oldX, y: body.oldY }, { x: body.x, y: body.y });
+  assert.deepEqual(body.trail, []);
+
+  const atPlane = { x: portals[0].x, y: portals[0].y, oldX: 0, oldY: 0, radius: 10, vx: 0, vy: 40 };
+  assert.equal(separateBodyFromEditedPortal(atPlane, portals[0]), true);
+  nearly(atPlane.y, portals[0].y - 11.001);
+  assert.equal(atPlane.vy, 0);
+
+  const outsideAperture = { x: portals[0].x + 45, y: portals[0].y, oldX: 0, oldY: 0, radius: 10 };
+  assert.equal(separateBodyFromEditedPortal(outsideAperture, portals[0]), false);
+});
+
+test('rapid ball creation uses separated launch slots and respects the safety cap', () => {
+  const bodies: Array<{ x: number; y: number; radius: number }> = [];
+  for (let i = 0; i < 24; i++) {
+    const spawn = findAvailableBallSpawn(bodies, 474, 632, 15);
+    assert.ok(spawn);
+    bodies.push({ ...spawn, radius: 15 });
+  }
+
+  for (let i = 0; i < bodies.length; i++) {
+    assert.ok(bodies[i].x >= bodies[i].radius && bodies[i].x <= 474 - bodies[i].radius);
+    assert.ok(bodies[i].y >= bodies[i].radius && bodies[i].y <= 632 - bodies[i].radius);
+    for (let j = i + 1; j < bodies.length; j++) {
+      assert.ok(Math.hypot(bodies[i].x - bodies[j].x, bodies[i].y - bodies[j].y) >= 38);
+    }
+  }
+
+  assert.equal(MAX_BALLS, 64);
+  assert.equal(findAvailableBallSpawn([], 20, 20, 15), null);
 });
 
 test('dragged ball index is parsed only for active ball drags', () => {
