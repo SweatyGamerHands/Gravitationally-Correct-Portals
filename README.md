@@ -1,14 +1,15 @@
 # Gravitationally Correct Portals
 
-An interactive React + Canvas sandbox for an **idealized Newtonian portal-physics model**. It focuses on coherent 2D portal transforms, aperture-transported gravity, continuous-looking traversal, and field visualizations that agree with object motion.
+An interactive React + Canvas sandbox for a **conservative Newtonian portal-physics model**. It focuses on coherent 2D portal transforms, gravity coupled through linked apertures, continuous traversal, and field visualizations that agree with object motion.
 
-This is not a complete general-relativity simulation. It is a deliberate educational model: uniform gravity is smoothly blended with linked-aperture gravity transported through paired portal frames.
+This is not a complete general-relativity simulation. It is a deliberate educational model: local and linked-image potentials are combined symmetrically, matched mouths share one seam potential, and acceleration is derived from that scalar field's negative gradient. Fixed passive mouths therefore cannot manufacture energy around a closed portal loop.
 
 ## Features
 
 - Canonical portal transform for points, vectors, velocity, acceleration, and residual frame motion.
-- One authoritative field sampler used by body physics, flow arrows, heatmap, streamlines, and grid distortion.
-- Smooth finite-aperture gravity influence with distance/edge falloff, one-sided support, recursive attenuation, and magnitude clamping.
+- One authoritative scalar-potential sampler used by body physics, flow arrows, heatmap, streamlines, and grid distortion.
+- Full reciprocal gravitational coupling through finite apertures, independent of whether matter traversal is one-sided.
+- Smooth symmetric linked-potential coupling with finite-aperture edge and range falloff.
 - Fixed-timestep physics accumulator for better render-frame invariance.
 - Swept portal crossing helpers, rim collision geometry, and speed-preserving portal motion in vacuum.
 - Swept moving-mouth traversal with frame-relative velocity transfer, one-sided back-face response, and moving-rim impacts.

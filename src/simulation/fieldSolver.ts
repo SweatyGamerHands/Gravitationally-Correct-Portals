@@ -1,83 +1,192 @@
 import type { Point, Portal } from './types';
-import { BASE_G, DEFAULT_FIELD_CLAMP, DEFAULT_FIELD_MAX_DEPTH } from './constants';
-import { mag, mapAccelerationThroughPortal, mapPointThroughPortal, scale, worldPointToPortalLocal } from './portalTransform';
+import { BASE_G, DEFAULT_FIELD_DERIVATIVE_STEP, PORTAL_EDGE_RADIUS } from './constants';
+import { mapPointThroughPortal, worldPointToPortalLocal } from './portalTransform';
 import { getLinkedPortal } from './portalTraversal';
 
-export type FieldConfig = { vacuum?: boolean; gravity: number; correctGravity?: boolean; portalPull?: number; twoSided?: boolean; maxDepth?: number; fieldClamp?: number };
-export type FieldSample = { acceleration: Point; directWeight: number; portalWeight: number; contributions: { portalId: string; depth: number; weight: number; vector: Point }[] };
+export type FieldConfig = {
+  vacuum?: boolean;
+  gravity: number;
+  derivativeStep?: number;
+};
+
+export type PotentialContribution = {
+  portalId: string;
+  depth: number;
+  weight: number;
+  potential: number;
+  mappedPoint: Point;
+};
+
+export type FieldSample = {
+  acceleration: Point;
+  potential: number;
+  directWeight: number;
+  portalWeight: number;
+  contributions: PotentialContribution[];
+};
+
+type PotentialSample = Omit<FieldSample, 'acceleration'>;
+
+const MIN_APERTURE_WEIGHT = 1e-8;
 
 const smoothstep = (t: number) => t * t * (3 - 2 * t);
-const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
+
 export const getBaselineG = (_vacuum: boolean | undefined, gravityMult: number) => BASE_G * gravityMult;
 
-export const apertureVisibilityWeight = (point: Point, portal: Portal, twoSided = true): number => {
+/**
+ * Smooth coupling to a finite aperture. Gravity is reciprocal even when matter
+ * traversal is one-sided, so this weight intentionally has no sidedness flag.
+ * The inner opening reaches unit coupling at the seam; that makes matched
+ * points on a portal pair share one passive-mouth potential.
+ */
+export const apertureVisibilityWeight = (point: Point, portal: Portal): number => {
   const local = worldPointToPortalLocal(point, portal);
-  if (!twoSided && local.normal < 0) return 0;
-  const half = portal.width / 2;
-  const absN = Math.abs(local.normal);
-  const edgeDistance = half - Math.abs(local.along);
-  const edgeSoft = Math.max(8, portal.width * 0.12);
-  const edge = smoothstep(clamp01((edgeDistance + edgeSoft) / (2 * edgeSoft)));
-  const apertureAngle = Math.atan2(half, absN + half * 0.18) / (Math.PI / 2);
-  const rangeFade = 1 / (1 + (absN / Math.max(1, portal.width * 1.8)) ** 2);
-  return clamp01(edge * apertureAngle * rangeFade);
+  const halfWidth = Math.max(0, portal.width / 2);
+  if (halfWidth === 0) return 0;
+
+  // Keep the whole physically traversable opening at unit coupling. The only
+  // seam taper occupies the solid endpoint-cap region and its exterior.
+  const innerEdge = Math.max(0, halfWidth - Math.min(PORTAL_EDGE_RADIUS, halfWidth * 0.5));
+  const outerEdge = halfWidth + Math.max(12, portal.width * 0.15);
+  const absAlong = Math.abs(local.along);
+  const edgeWeight = absAlong <= innerEdge
+    ? 1
+    : 1 - smoothstep(clamp01((absAlong - innerEdge) / Math.max(1e-9, outerEdge - innerEdge)));
+
+  const normalRange = Math.max(1, portal.width * 1.8);
+  const normalWeight = 1 / (1 + (Math.abs(local.normal) / normalRange) ** 2);
+  return clamp01(edgeWeight * normalWeight);
 };
 
-export const sampleField = (point: Point, portals: Portal[], config: FieldConfig): FieldSample => {
-  const base: Point = { x: 0, y: getBaselineG(config.vacuum, config.gravity) };
-  if (!config.correctGravity || portals.length < 2 || mag(base) === 0) return { acceleration: base, directWeight: 1, portalWeight: 0, contributions: [] };
-  const maxDepth = config.maxDepth ?? DEFAULT_FIELD_MAX_DEPTH;
-  const pull = Math.max(0, config.portalPull ?? 1);
-  if (pull === 0) return { acceleration: base, directWeight: 1, portalWeight: 0, contributions: [] };
-  const twoSided = config.twoSided ?? true;
-  const contributions: FieldSample['contributions'] = [];
-  let totalPortalWeight = 0;
-  let ax = 0; let ay = 0;
-  type ToRootTransform = (vector: Point) => Point;
-  const visit = (
-    p: Point,
-    depth: number,
-    attenuation: number,
-    blockedEntryId: string | null,
-    toRoot: ToRootTransform,
-  ) => {
-    if (depth >= maxDepth) return;
-    portals.forEach((entry, i) => {
-      const exit = getLinkedPortal(portals, i);
-      if (!exit || entry.id === blockedEntryId) return;
-      const visibility = apertureVisibilityWeight(p, entry, twoSided);
-      const w = visibility * attenuation;
-      if (w <= 1e-5) return;
-      const transported = toRoot(mapAccelerationThroughPortal(base, exit, entry));
-      const branchWeight = w * (0.62 ** depth);
-      contributions.push({ portalId: entry.id, depth: depth + 1, weight: branchWeight, vector: transported });
-      totalPortalWeight += branchWeight;
-      ax += transported.x * branchWeight;
-      ay += transported.y * branchWeight;
-      if (depth + 1 < maxDepth) {
-        const nextToRoot: ToRootTransform = vector => toRoot(mapAccelerationThroughPortal(vector, exit, entry));
-        visit(
-          mapPointThroughPortal(p, entry, exit),
-          depth + 1,
-          attenuation * visibility * 0.5,
-          exit.id,
-          nextToRoot,
-        );
-      }
+const baselinePotentialAt = (point: Point, config: FieldConfig) => (
+  -getBaselineG(config.vacuum, config.gravity) * point.y
+);
+
+/**
+ * The canonical field is built from a scalar potential, not by blending force
+ * vectors. Each visible mouth pulls the field toward the symmetric average of
+ * the local ambient potential and its linked image potential. Direct and linked
+ * potentials are normalized so a pair imposes one passive potential at its seam.
+ * Taking -grad(phi) retains the additional edge/range terms required for a
+ * conservative field; omitting those terms is what allowed free-energy loops.
+ */
+const samplePotential = (
+  point: Point,
+  portals: readonly Portal[],
+  config: FieldConfig,
+  captureContributions: boolean,
+): PotentialSample => {
+  const directPotential = baselinePotentialAt(point, config);
+  const baseAcceleration = getBaselineG(config.vacuum, config.gravity);
+  if (portals.length < 2 || baseAcceleration === 0) {
+    return {
+      potential: directPotential,
+      directWeight: 1,
+      portalWeight: 0,
+      contributions: [],
+    };
+  }
+
+  const contributions: PotentialContribution[] = [];
+  const mouthSamples: PotentialContribution[] = [];
+
+  portals.forEach((entry, index) => {
+    const exit = getLinkedPortal(portals, index);
+    if (!exit) return;
+
+    const weight = apertureVisibilityWeight(point, entry);
+    if (weight <= MIN_APERTURE_WEIGHT) return;
+
+    const mappedPoint = mapPointThroughPortal(point, entry, exit);
+    const sharedLinkedPotential = (
+      baselinePotentialAt(point, config)
+      + baselinePotentialAt(mappedPoint, config)
+    ) / 2;
+
+    mouthSamples.push({
+      portalId: entry.id,
+      depth: 1,
+      weight,
+      potential: sharedLinkedPotential,
+      mappedPoint,
     });
+  });
+
+  let directWeight = mouthSamples.reduce((product, sample) => product * (1 - sample.weight), 1);
+  let effectiveSamples = mouthSamples.map((sample, sampleIndex) => ({
+    ...sample,
+    weight: sample.weight * mouthSamples.reduce(
+      (product, other, otherIndex) => product * (sampleIndex === otherIndex ? 1 : 1 - other.weight),
+      1,
+    ),
+  }));
+
+  // Two exactly overlapping seams are not a regular manifold point. Keep the
+  // result finite and symmetric by averaging every equally dominant seam.
+  if (directWeight + effectiveSamples.reduce((sum, sample) => sum + sample.weight, 0) <= MIN_APERTURE_WEIGHT) {
+    const strongestWeight = Math.max(...mouthSamples.map(sample => sample.weight));
+    effectiveSamples = mouthSamples.map(sample => ({
+      ...sample,
+      weight: Math.abs(sample.weight - strongestWeight) <= MIN_APERTURE_WEIGHT ? 1 : 0,
+    }));
+    directWeight = 0;
+  }
+
+  let weightedPotential = directPotential * directWeight;
+  let totalWeight = directWeight;
+  let portalWeight = 0;
+  effectiveSamples.forEach(contribution => {
+    weightedPotential += contribution.potential * contribution.weight;
+    totalWeight += contribution.weight;
+    portalWeight += contribution.weight;
+  });
+
+  if (captureContributions) {
+    contributions.push(...effectiveSamples.filter(contribution => contribution.weight > MIN_APERTURE_WEIGHT));
+  }
+
+  return {
+    potential: weightedPotential / totalWeight,
+    directWeight: directWeight / totalWeight,
+    portalWeight: portalWeight / totalWeight,
+    contributions,
   };
-  visit(point, 0, 1, null, vector => vector);
-  const portalOcclusion = clamp01(totalPortalWeight);
-  const directWeight = 1 - portalOcclusion;
-  const denom = directWeight + totalPortalWeight || 1;
-  const blended = { x: (base.x * directWeight + ax) / denom, y: (base.y * directWeight + ay) / denom };
-  let acceleration = {
-    x: base.x + (blended.x - base.x) * pull,
-    y: base.y + (blended.y - base.y) * pull,
-  };
-  const m = mag(acceleration); const max = Math.max(config.fieldClamp ?? DEFAULT_FIELD_CLAMP, mag(base));
-  if (m > max) acceleration = scale(acceleration, max / m);
-  return { acceleration, directWeight: directWeight / denom, portalWeight: totalPortalWeight / denom, contributions };
 };
 
-export const computeGravityAt = (x: number, y: number, portals: Portal[], config: FieldConfig): Point => sampleField({ x, y }, portals, config).acceleration;
+export const computePotentialAt = (
+  x: number,
+  y: number,
+  portals: readonly Portal[],
+  config: FieldConfig,
+) => samplePotential({ x, y }, portals, config, false).potential;
+
+const computeAccelerationAt = (point: Point, portals: readonly Portal[], config: FieldConfig): Point => {
+  const baselineG = getBaselineG(config.vacuum, config.gravity);
+  if (portals.length < 2 || baselineG === 0) {
+    return { x: 0, y: baselineG };
+  }
+
+  const h = Math.max(0.05, config.derivativeStep ?? DEFAULT_FIELD_DERIVATIVE_STEP);
+  const left = computePotentialAt(point.x - h, point.y, portals, config);
+  const right = computePotentialAt(point.x + h, point.y, portals, config);
+  const up = computePotentialAt(point.x, point.y - h, portals, config);
+  const down = computePotentialAt(point.x, point.y + h, portals, config);
+
+  return {
+    x: -(right - left) / (2 * h),
+    y: -(down - up) / (2 * h),
+  };
+};
+
+export const sampleField = (point: Point, portals: readonly Portal[], config: FieldConfig): FieldSample => ({
+  ...samplePotential(point, portals, config, true),
+  acceleration: computeAccelerationAt(point, portals, config),
+});
+
+export const computeGravityAt = (
+  x: number,
+  y: number,
+  portals: readonly Portal[],
+  config: FieldConfig,
+): Point => computeAccelerationAt({ x, y }, portals, config);

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   apertureVisibilityWeight,
   computeGravityAt,
+  computePotentialAt,
   DEFAULT_TWO_SIDED,
   findAvailableBallSpawn,
   getBaselineG,
@@ -59,8 +60,8 @@ test('crossing detected within aperture', () => {
   assert.ok(hit);
 });
 
-test('gravity compute returns ambient when correction disabled', () => {
-  const g = computeGravityAt(100, 100, portals, { vacuum: false, gravity: 1, correctGravity: false, portalPull: 1 });
+test('gravity compute returns ambient without a linked portal pair', () => {
+  const g = computeGravityAt(100, 100, [portals[0]], { vacuum: false, gravity: 1 });
   assert.equal(g.x, 0);
   assert.equal(g.y, 800);
 });
@@ -70,7 +71,7 @@ test('gravity compute changes continuously across aperture edge falloff', () => 
     withPortalVectors({ id: 'entry', x: 100, y: 100, angle: 0, color: '#f90', width: 100 }),
     withPortalVectors({ id: 'exit', x: 300, y: 100, angle: Math.PI / 2, color: '#09f', width: 100 }),
   ];
-  const config = { vacuum: false, gravity: 1, correctGravity: true, portalPull: 1 };
+  const config = { vacuum: false, gravity: 1 };
   const halfWidth = edgePortals[0].width / 2;
   const epsilon = 0.001;
   const inside = computeGravityAt(100 + halfWidth - epsilon, 120, edgePortals, config);
@@ -672,63 +673,158 @@ test('canonical portal transform preserves tangent and inverts normal', () => {
   nearly(mappedNormal.x, -exit.normal.x); nearly(mappedNormal.y, -exit.normal.y);
 });
 
-test('field solver returns exact baseline when disabled and converges far away', () => {
-  const cfg = { vacuum: false, gravity: 1, correctGravity: true, portalPull: 1, twoSided: true };
-  assert.deepEqual(computeGravityAt(0, 0, portals, { ...cfg, correctGravity: false }), { x: 0, y: 800 });
+test('field solver returns exact baseline without a pair and converges far away', () => {
+  const cfg = { vacuum: false, gravity: 1 };
+  assert.deepEqual(computeGravityAt(0, 0, [], cfg), { x: 0, y: 800 });
   const far = computeGravityAt(100000, -100000, portals, cfg);
   assert.ok(Math.abs(far.x) < 0.01);
   assert.ok(Math.abs(far.y - 800) < 0.01);
 });
 
-test('aperture visibility is smooth and finite at center and endpoints', () => {
+test('aperture coupling is smooth and finite at center and endpoints', () => {
   const p = portals[0];
-  const center = apertureVisibilityWeight({ x: p.x, y: p.y + 4 }, p, true);
-  const edgeA = apertureVisibilityWeight({ x: p.x + p.width / 2 - 0.001, y: p.y + 4 }, p, true);
-  const edgeB = apertureVisibilityWeight({ x: p.x + p.width / 2 + 0.001, y: p.y + 4 }, p, true);
+  const center = apertureVisibilityWeight({ x: p.x, y: p.y + 4 }, p);
+  const edgeA = apertureVisibilityWeight({ x: p.x + p.width / 2 - 0.001, y: p.y + 4 }, p);
+  const edgeB = apertureVisibilityWeight({ x: p.x + p.width / 2 + 0.001, y: p.y + 4 }, p);
   assert.ok(Number.isFinite(center) && Number.isFinite(edgeA) && Number.isFinite(edgeB));
   assert.ok(center > edgeA);
   assert.ok(Math.abs(edgeA - edgeB) < 0.001);
 });
 
-test('one-sided portal gravity is present at the front aperture plane only', () => {
+test('matter sidedness does not make gravitational coupling one-way', () => {
   const portal = portals[0];
-  const atPlane = apertureVisibilityWeight({ x: portal.x, y: portal.y }, portal, false);
-  const behind = apertureVisibilityWeight({ x: portal.x, y: portal.y - 0.001 }, portal, false);
+  const front = apertureVisibilityWeight({ x: portal.x, y: portal.y + 20 }, portal);
+  const behind = apertureVisibilityWeight({ x: portal.x, y: portal.y - 20 }, portal);
 
-  assert.ok(atPlane > 0);
-  assert.equal(behind, 0);
+  assert.ok(front > 0);
+  nearly(front, behind);
 });
 
-test('portal gravity leakage scales the field deviation instead of saturating in normalization', () => {
-  const fieldPortals = [
-    withPortalVectors({ id: 'entry', x: 100, y: 100, angle: 0, color: '#f90', width: 100 }),
-    withPortalVectors({ id: 'exit', x: 300, y: 100, angle: Math.PI / 2, color: '#09f', width: 100 }),
+test('matched passive mouths share one potential despite their height difference', () => {
+  const loopPortals = [
+    withPortalVectors({ id: 'lower', x: 400, y: 500, angle: Math.PI, color: '#f90', width: 140 }),
+    withPortalVectors({ id: 'upper', x: 400, y: 100, angle: 0, color: '#09f', width: 140 }),
   ];
-  const point = { x: 100, y: 120 };
-  const config = { vacuum: false, gravity: 1, correctGravity: true, twoSided: true, maxDepth: 1, fieldClamp: 10000 };
-  const baseline = computeGravityAt(point.x, point.y, fieldPortals, { ...config, portalPull: 0 });
-  const one = computeGravityAt(point.x, point.y, fieldPortals, { ...config, portalPull: 1 });
-  const two = computeGravityAt(point.x, point.y, fieldPortals, { ...config, portalPull: 2 });
-  const three = computeGravityAt(point.x, point.y, fieldPortals, { ...config, portalPull: 3 });
-  const deviation = (sample: Point) => Math.hypot(sample.x - baseline.x, sample.y - baseline.y);
+  const config = { gravity: 1 };
 
-  assert.deepEqual(baseline, { x: 0, y: 800 });
-  nearly(deviation(two), deviation(one) * 2);
-  nearly(deviation(three), deviation(one) * 3);
+  for (const along of [-30, 0, 30]) {
+    const lowerPoint = {
+      x: loopPortals[0].x + loopPortals[0].dir.x * along,
+      y: loopPortals[0].y + loopPortals[0].dir.y * along,
+    };
+    const upperPoint = mapPointThroughPortal(lowerPoint, loopPortals[0], loopPortals[1]);
+    nearly(
+      computePotentialAt(lowerPoint.x, lowerPoint.y, loopPortals, config),
+      computePotentialAt(upperPoint.x, upperPoint.y, loopPortals, config),
+      1e-7,
+    );
+  }
 });
 
-test('field recursion is deterministic bounded and two-sided aware', () => {
-  const cfg = { vacuum: false, gravity: 1, correctGravity: true, portalPull: 1, twoSided: true, maxDepth: 4, fieldClamp: 1000 };
+test('seam potential remains matched for close, rotated mouths', () => {
+  const rotatedPortals = [
+    withPortalVectors({ id: 'a', x: 200, y: 300, angle: 0.4, color: '#f90', width: 180 }),
+    withPortalVectors({ id: 'b', x: 260, y: 380, angle: 2.2, color: '#09f', width: 180 }),
+  ];
+  const config = { gravity: 1 };
+
+  for (const along of [-80, -20, 0, 20, 80]) {
+    const entryPoint = {
+      x: rotatedPortals[0].x + rotatedPortals[0].dir.x * along,
+      y: rotatedPortals[0].y + rotatedPortals[0].dir.y * along,
+    };
+    const exitPoint = mapPointThroughPortal(entryPoint, rotatedPortals[0], rotatedPortals[1]);
+    nearly(
+      computePotentialAt(entryPoint.x, entryPoint.y, rotatedPortals, config),
+      computePotentialAt(exitPoint.x, exitPoint.y, rotatedPortals, config),
+      1e-7,
+    );
+  }
+});
+
+test('gravity vectors transform consistently across the matched seam', () => {
+  const rotatedPortals = [
+    withPortalVectors({ id: 'a', x: 200, y: 300, angle: 0.4, color: '#f90', width: 180 }),
+    withPortalVectors({ id: 'b', x: 260, y: 380, angle: 2.2, color: '#09f', width: 180 }),
+  ];
+  const config = { gravity: 1 };
+
+  for (const along of [-70, 0, 70]) {
+    const entryPoint = {
+      x: rotatedPortals[0].x + rotatedPortals[0].dir.x * along,
+      y: rotatedPortals[0].y + rotatedPortals[0].dir.y * along,
+    };
+    const exitPoint = mapPointThroughPortal(entryPoint, rotatedPortals[0], rotatedPortals[1]);
+    const entryGravity = computeGravityAt(entryPoint.x, entryPoint.y, rotatedPortals, config);
+    const expectedExitGravity = transformThroughPortal(entryGravity, rotatedPortals[0], rotatedPortals[1]);
+    const exitGravity = computeGravityAt(exitPoint.x, exitPoint.y, rotatedPortals, config);
+
+    assert.ok(
+      Math.hypot(exitGravity.x - expectedExitGravity.x, exitGravity.y - expectedExitGravity.y) < 1.5,
+      'linked seam gravity should use the same portal-frame transform as matter',
+    );
+  }
+});
+
+test('canonical gravity supplies zero net work to an infinite-fall path', () => {
+  const loopPortals = [
+    withPortalVectors({ id: 'lower', x: 400, y: 500, angle: Math.PI, color: '#f90', width: 140 }),
+    withPortalVectors({ id: 'upper', x: 400, y: 100, angle: 0, color: '#09f', width: 140 }),
+  ];
+  const config = { gravity: 1 };
+  const steps = 400;
+  const dy = (loopPortals[0].y - loopPortals[1].y) / steps;
+  let specificWork = 0;
+
+  for (let index = 0; index < steps; index++) {
+    const y = loopPortals[1].y + (index + 0.5) * dy;
+    const gravity = computeGravityAt(loopPortals[0].x, y, loopPortals, config);
+    specificWork += gravity.y * dy;
+  }
+
+  assert.ok(computeGravityAt(400, 250, loopPortals, config).y < 0, 'field should oppose free fall within the loop');
+  assert.ok(computeGravityAt(400, 125, loopPortals, config).y > 0, 'ambient direction should remain near the seam');
+  assert.ok(Math.abs(specificWork) < 1, `expected zero loop work, got ${specificWork}`);
+});
+
+test('repeated passive portal loops do not produce unbounded acceleration', () => {
+  const loopPortals = [
+    withPortalVectors({ id: 'lower', x: 400, y: 500, angle: Math.PI, color: '#f90', width: 140 }),
+    withPortalVectors({ id: 'upper', x: 400, y: 100, angle: 0, color: '#09f', width: 140 }),
+  ];
+  const config = { gravity: 1 };
+  const ball = new Ball(400, 110, 5, 1);
+  ball.vy = 500;
+  const crossingSpeeds: number[] = [];
+  const dt = 1 / 1440;
+
+  for (let step = 0; step < 1440 * 20 && crossingSpeeds.length < 10; step++) {
+    ball.update(1, (x, y) => computeGravityAt(x, y, loopPortals, config), dt);
+    const proposedY = ball.y;
+    ball.checkCrossing(loopPortals, false, 0.55);
+    if (ball.y < proposedY - 200) crossingSpeeds.push(Math.hypot(ball.vx, ball.vy));
+  }
+
+  assert.equal(crossingSpeeds.length, 10);
+  assert.ok(
+    crossingSpeeds.at(-1)! <= crossingSpeeds[0] + 0.1,
+    `loop speed drifted from ${crossingSpeeds[0]} to ${crossingSpeeds.at(-1)}`,
+  );
+});
+
+test('field sampling is deterministic, normalized, and finite', () => {
+  const cfg = { vacuum: false, gravity: 1 };
   const a = sampleField({ x: 100, y: 120 }, portals, cfg);
   const b = sampleField({ x: 100, y: 120 }, portals, cfg);
   assert.deepEqual(a, b);
-  assert.ok(speed(a.acceleration) <= 1000 + 1e-9);
-  const one = apertureVisibilityWeight({ x: portals[0].x, y: portals[0].y - 20 }, portals[0], false);
-  assert.equal(one, 0);
+  nearly(a.directWeight + a.portalWeight, 1);
+  assert.ok(Number.isFinite(a.potential));
+  assert.ok(Number.isFinite(a.acceleration.x));
+  assert.ok(Number.isFinite(a.acceleration.y));
 });
 
-test('recursive field branches compose acceleration back into the sample frame', () => {
-  const recursivePortals = [
+test('multiple portal pairs contribute named shared-seam potentials', () => {
+  const multiPairPortals = [
     withPortalVectors({ id: 'a', x: 0, y: 0, angle: 0, color: '#f90', width: 200 }),
     withPortalVectors({ id: 'b', x: 100, y: 0, angle: Math.PI, color: '#09f', width: 200 }),
     withPortalVectors({ id: 'c', x: 100, y: -20, angle: 0, color: '#f90', width: 200 }),
@@ -736,16 +832,18 @@ test('recursive field branches compose acceleration back into the sample frame',
   ];
   const sample = sampleField(
     { x: 0, y: 20 },
-    recursivePortals,
-    { gravity: 1, correctGravity: true, portalPull: 1, twoSided: true, maxDepth: 3, fieldClamp: 10000 },
+    multiPairPortals,
+    { gravity: 1 },
   );
-  const composed = sample.contributions.find(contribution => contribution.portalId === 'c' && contribution.depth === 2);
+  const firstPair = sample.contributions.find(contribution => contribution.portalId === 'a');
+  const secondPair = sample.contributions.find(contribution => contribution.portalId === 'c');
 
-  assert.ok(composed);
-  assert.ok(sample.contributions.some(contribution => contribution.depth === 3));
-  assert.ok(sample.contributions.every(contribution => contribution.depth <= 3));
-  nearly(composed.vector.x, -800);
-  nearly(composed.vector.y, 0);
+  assert.ok(firstPair);
+  assert.ok(secondPair);
+  assert.ok(sample.contributions.every(contribution => contribution.depth === 1));
+  assert.ok(Number.isFinite(secondPair.potential));
+  assert.ok(Number.isFinite(secondPair.mappedPoint.x));
+  assert.ok(Number.isFinite(secondPair.mappedPoint.y));
 });
 
 test('zero gravity high speed portal crossing preserves speed', () => {

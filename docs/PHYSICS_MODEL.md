@@ -1,6 +1,6 @@
 # Physics model
 
-This project implements an **idealized Newtonian portal model**, not a complete general-relativity simulation. The sandbox keeps ordinary CSS-pixel world coordinates and uses deterministic fixed-step integration; portals are zero-thickness apertures with solid rims.
+This project implements a **conservative, idealized Newtonian portal model**, not a complete general-relativity simulation. The sandbox keeps ordinary CSS-pixel world coordinates and uses deterministic fixed-step integration; portals are zero-thickness apertures with solid rims.
 
 ## Coordinate conventions
 
@@ -38,18 +38,49 @@ v'       = v_along * exit.t - v_normal * exit.n
 
 This preserves vector magnitude and makes the inverse transform the same operation with entry and exit swapped.
 
-## Portal-transported gravity field
+## Canonical gravity-coupled field
 
-The authoritative field sampler is `sampleField` / `computeGravityAt`. It starts with uniform baseline acceleration `g = (0, BASE_G * gravityMultiplier)`. For each visible portal aperture, the solver computes a smooth aperture-visibility weight using:
+The authoritative field sampler is `sampleField` / `computeGravityAt`, backed by `computePotentialAt`. It starts from the uniform ambient scalar potential
+
+```text
+phi_0(x, y) = -BASE_G * gravityMultiplier * y
+```
+
+so ordinary acceleration is `g = -grad(phi_0)`. For each visible linked aperture, the solver maps the sample point `p` through that mouth's rigid portal transform `T`. It forms a symmetric linked potential:
+
+```text
+phi_linked(p) = (phi_0(p) + phi_0(T(p))) / 2
+```
+
+Direct and linked potentials are then combined smoothly:
+
+```text
+phi(p) = (weight_direct * phi_0(p) + sum(weight_mouth * phi_linked(p)))
+         / (weight_direct + sum(weight_mouth))
+```
+
+The smooth mouth weights use:
 
 - edge softness around finite aperture endpoints,
-- subtended-angle-like decay with distance from the aperture,
-- optional one-sided front-face rejection,
-- inverse-square-style range falloff.
+- full coupling across the inner aperture seam,
+- inverse-square-style range falloff away from the mouth,
+- reciprocal contributions from both mouths of every complete pair.
 
-Each branch transports the gravity vector from the linked side through the canonical acceleration transform. Direct and transported branches are normalized into a unit-leakage field, then `portalPull` linearly scales that field's deviation from ambient gravity. Recursive branches compose their vector transforms back into the original sample frame, are limited by `maxDepth`, attenuated geometrically, and clamped by `fieldClamp` to avoid runaway feedback for portal-facing-portal setups.
+Acceleration is calculated only after the scalar potential is assembled:
 
-Because this is a blended vector field, it is intentionally educational and coherent rather than a claim of exact conservative physics.
+```text
+g(p) = -grad(phi(p))
+```
+
+This retains the gradient terms created by finite aperture edges and range falloff. Blending already-transformed acceleration vectors would omit those terms and create a non-conservative field.
+
+At corresponding points within a pair's inner seam, the portal transform and its inverse exchange the two terms in `phi_linked`, so both mouths receive the same potential. Its gradient transforms through the same portal frames as velocity and acceleration. A fixed passive crossing preserves speed, and a complete closed route cannot gain gravitational energy:
+
+```text
+work_per_unit_mass = integral(g dot dl) = -delta(phi) = 0
+```
+
+Gravity coupling is reciprocal and always enabled. The one-sided option controls matter traversal and its solid back plate; it does not turn gravitation into a directional interaction. The former gravity enable/disable button and arbitrary leakage multiplier were removed because either could select a noncanonical model.
 
 ## Integration and traversal
 
@@ -63,6 +94,8 @@ Portal placement and rotation are kinematic mouth motion. Each pointer update sw
 
 Velocity transfer is evaluated in the instantaneous portal frames. The entry mouth's translational and angular point velocity is subtracted from the body velocity, that relative velocity is mapped through the canonical portal transform, and the linked exit point velocity is added. A moving mouth can therefore exchange energy and momentum with a body, as a kinematic boundary should. The UI defaults to one-sided mouths and exposes the two-sided toggle explicitly.
 
+Moving a mouth also makes the scalar potential explicitly time-dependent. Energy gained while the field changes belongs to the external actuator that moved the kinematic portal; it is not passive-loop energy.
+
 ## Visualization strategy
 
 Field arrows, heatmap, streamlines, grid distortion, trajectory-related calculations, and body acceleration all sample `computeGravityAt`. The grid is presented as a field-distortion visualization, not a literal spacetime metric. Streamlines are seeded near portal mouths and integrated with RK4 through the same vector field.
@@ -75,9 +108,10 @@ New bodies are placed into the first collision-free launch slot instead of shari
 
 ## Known limitations
 
-- The field blend is not a conservative potential field.
+- The scalar field is a conservative Newtonian approximation, not a numerical solution of the Einstein field equations or a complete Poisson solve on a wormhole manifold.
 - Portals are ideal zero-thickness apertures with simplified rim collision geometry.
-- Recursive gravity branches are depth-limited for determinism and performance.
+- Overlapping mouths and networks with several simultaneous pairs use a smooth shared-seam approximation rather than a full global Poisson solve.
+- Acceleration uses a centered finite-difference derivative of the scalar potential.
 - Multiple dynamic rigid bodies use circle approximations rather than full rigid-body rotation.
 - Portal motion is sampled at pointer updates, follows the shortest angular path between samples, and resolves the earliest event per body per sample.
 - Body motion and mouth motion use separate swept update streams rather than one globally coupled time-of-impact solve.

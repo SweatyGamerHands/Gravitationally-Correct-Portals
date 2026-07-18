@@ -12,7 +12,6 @@ import {
   Layout,
   Info,
   Wind,
-  Zap,
   Maximize2,
   ChevronRight,
 } from 'lucide-react';
@@ -90,7 +89,6 @@ export default function App() {
     size: 15,
     mass: 20,
     substeps: DEFAULT_SUBSTEPS,
-    correctGravity: true,
     vacuum: false,
     showGrid: true,
     showFlow: true,
@@ -101,7 +99,6 @@ export default function App() {
     flowScale: 1.0,
     showHelp: false,
     portalWidth: 100,
-    portalPull: 1.0,
     twoSided: DEFAULT_TWO_SIDED
   });
   const configRef = useRef(config);
@@ -825,7 +822,7 @@ export default function App() {
             <h1 className="text-3xl md:text-4xl font-light leading-tight">Idealized Portal <br/><span className="font-bold italic">Field Sandbox</span></h1>
           </div>
           <p className="text-white/50 text-xs md:text-sm leading-relaxed max-w-md mt-4 lg:mt-0">
-            An idealized Newtonian 2D sandbox: one canonical portal transform drives momentum, aperture-transported gravity, field arrows, heat, streamlines, and crossings.
+            A conservative Newtonian 2D sandbox: linked apertures share one scalar gravitational potential, so passive portal loops cannot create energy.
           </p>
         </div>
 
@@ -980,17 +977,16 @@ export default function App() {
               />
             </div>
 
-            <div className="space-y-2">
-              <div className="flex justify-between text-[10px] uppercase font-bold text-white/50">
-                <span className="flex items-center">Portal Gravity Leakage <HelpTooltip text="Portal-specific transmission coefficient. Determines how much of the linked side's ambient gravitational field leaks through this aperture." /></span>
-                <span className="text-[#ff9d00]">{config.portalPull.toFixed(1)}x</span>
+            <div className="p-3 rounded-xl border border-[#00a2ff]/20 bg-[#00a2ff]/5">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[10px] uppercase font-bold text-white/50 flex items-center">
+                  Gravity Coupling <HelpTooltip text="Always canonical: gravity derives from one portal-aware scalar potential. Matter sidedness does not disable reciprocal gravitational coupling." />
+                </span>
+                <span className="text-[9px] font-mono text-[#00a2ff]">FULL</span>
               </div>
-              <input 
-                type="range" min="0" max="3" step="0.1"
-                value={config.portalPull}
-                onChange={e => setConfig(prev => ({ ...prev, portalPull: parseFloat(e.target.value) }))}
-                className="w-full accent-[#ff9d00] h-1"
-              />
+              <p className="mt-2 text-[9px] text-white/25 leading-relaxed">
+                Passive mouths equalize matched seam potential; closed loops receive no free gravitational work.
+              </p>
             </div>
 
             <div className="space-y-3 pt-2">
@@ -1018,7 +1014,7 @@ export default function App() {
           <div className="mt-8 p-3 bg-black/40 rounded-xl border border-white/5">
             <div className="text-[9px] text-white/40 uppercase mb-2">Topology Status</div>
             <div className="flex justify-between items-center">
-              <div className="text-[10px] font-mono text-[#00a2ff]">Stable</div>
+              <div className="text-[10px] font-mono text-[#00a2ff]">Canonical</div>
               <div className="flex gap-1">
                 {[1,2,3].map(i => <div key={i} className="w-1 h-3 bg-[#00a2ff]/40 rounded-full animate-pulse" style={{ animationDelay: `${i*0.2}s` }} />)}
               </div>
@@ -1066,22 +1062,12 @@ export default function App() {
             <div className="flex items-center gap-2 md:gap-4 border-r border-white/10 pr-2 md:pr-4">
               <div className="relative">
                 <button 
-                  onClick={() => setConfig(prev => ({ ...prev, correctGravity: !prev.correctGravity }))}
-                  className={`p-2 rounded-full transition-colors ${config.correctGravity ? 'text-[#00a2ff]' : 'text-neutral-500'}`}
-                >
-                  <Zap size={16} className="md:w-[18px] md:h-[18px]" />
-                </button>
-                <HelpTooltip text="Toggles portal frame-transfer: linked-side gravity is transmitted and reoriented through apertures. This does not change the global gravity strength." />
-              </div>
-
-              <div className="relative">
-                <button 
                   onClick={() => setConfig(prev => ({ ...prev, vacuum: !prev.vacuum }))}
                   className={`p-2 rounded-full transition-colors ${config.vacuum ? 'text-orange-500' : 'text-neutral-500'}`}
                 >
                   <Wind size={16} className="md:w-[18px] md:h-[18px]" />
                 </button>
-                <HelpTooltip text="Vacuum disables air damping for infinite momentum loops. Baseline gravity strength stays controlled by the Physical Gravity slider." />
+                <HelpTooltip text="Vacuum disables air damping only. It does not disable gravity coupling or permit passive portal loops to create energy." />
               </div>
             </div>
 
@@ -1252,9 +1238,9 @@ export default function App() {
                 <section>
                   <h3 className="text-[#00a2ff] uppercase text-[10px] font-bold tracking-[0.2em] mb-2 md:mb-3">02. Gravitational Transmission</h3>
                   <p>
-                    Portal pairs act as a bridge for the ambient gravitational field. Gravity is sampled from the linked side, 
-                    transformed into the local basis of the entry aperture, and re-emitted. This creates a continuous, reoriented 
-                    field through the wormhole.
+                    Portal pairs are solved as one reciprocal gravitational system. The engine assigns corresponding mouth
+                    points one shared <b>seam potential</b>, then derives acceleration from the negative potential gradient.
+                    A closed passive portal loop therefore cannot manufacture gravitational energy.
                   </p>
                 </section>
 
@@ -1271,7 +1257,7 @@ export default function App() {
                   <ul className="list-disc list-inside space-y-1 md:space-y-2">
                     <li><b>Drag</b> a portal to move the aperture physically through the scene. Its swept mouth can teleport balls, while its solid rim and one-sided back can impart momentum.</li>
                     <li><b>Rotate</b> via the white handle to change the exit trajectory.</li>
-                    <li><b>Vacuum Mode</b> removes air damping only, allowing balls to preserve momentum in a vertical loop while gravity strength remains unchanged.</li>
+                    <li><b>Vacuum Mode</b> removes air damping only. Gravity remains portal-coupled and conservative.</li>
                   </ul>
                 </section>
               </div>
