@@ -18,16 +18,17 @@ import {
 } from 'lucide-react';
 import {
   FIXED_TIMESTEP,
+  DEFAULT_TWO_SIDED,
   MAX_BALLS,
   MAX_ACCUMULATED_TIME,
+  PORTAL_EDGE_RADIUS,
   computeGravityAt,
   findAvailableBallSpawn,
   getBaselineG,
-  getLinkedPortal,
   getPortalLocal,
   getScaledFrameDt,
   movePortalForEditor,
-  separateBodyFromEditedPortal,
+  resolveMovingPortalSweeps,
   syncPinnedBallToPointer,
   type DragState,
 } from './simulation/physics';
@@ -101,7 +102,7 @@ export default function App() {
     showHelp: false,
     portalWidth: 100,
     portalPull: 1.0,
-    twoSided: true
+    twoSided: DEFAULT_TWO_SIDED
   });
   const configRef = useRef(config);
   const portalsRef = useRef(portals);
@@ -114,6 +115,7 @@ export default function App() {
   }, []);
   const lastPos = useRef({ x: 0, y: 0 });
   const activePointerId = useRef<number | null>(null);
+  const lastPortalMotionTimestamp = useRef<number | null>(null);
   const frameCount = useRef(0);
   const lastTime = useRef(performance.now());
   const prevTime = useRef(performance.now());
@@ -482,16 +484,6 @@ export default function App() {
       const config = configRef.current;
       const portals = portalsRef.current;
       const objects = objectsRef.current;
-      const dragState = dragStateRef.current;
-      const editedPortalId = dragState.type === 'portal' || dragState.type === 'handle'
-        ? dragState.id
-        : null;
-      const editedPortalIndex = editedPortalId
-        ? portals.findIndex(portal => portal.id === editedPortalId)
-        : -1;
-      const editedLinkedPortalId = editedPortalIndex >= 0
-        ? getLinkedPortal(portals, editedPortalIndex)?.id ?? null
-        : null;
 
       // FPS calculation
       frameCount.current++;
@@ -545,7 +537,7 @@ export default function App() {
             (x, y) => getGravityAt(x, y, portals), 
             dt
           );
-          obj.checkCrossing(portals, config.twoSided, bounce, editedPortalId);
+          obj.checkCrossing(portals, config.twoSided, bounce);
         });
         
         // Pass 2: Ball-Ball Collisions
@@ -555,7 +547,7 @@ export default function App() {
         // Pass 3: Final Constraint Pass (Statics)
         objects.forEach((obj, index) => {
           if (index === pinnedIdx) return;
-          obj.constrain(w, h, portals, bounce, config.twoSided, editedPortalId);
+          obj.constrain(w, h, portals, bounce, config.twoSided);
         });
         }
         accumulatorRef.current -= FIXED_TIMESTEP;
@@ -564,7 +556,6 @@ export default function App() {
       // Draw Portals
       portals.forEach(p => {
         ctx.save();
-        ctx.globalAlpha = p.id === editedPortalId || p.id === editedLinkedPortalId ? 0.55 : 1;
         ctx.translate(p.x, p.y);
         ctx.rotate(p.angle);
 
@@ -598,8 +589,8 @@ export default function App() {
         // Edge Caps (Always solid)
         ctx.fillStyle = '#fff';
         ctx.beginPath();
-        ctx.arc(-p.width/2, 0, 4, 0, Math.PI * 2);
-        ctx.arc(p.width/2, 0, 4, 0, Math.PI * 2);
+        ctx.arc(-p.width/2, 0, PORTAL_EDGE_RADIUS, 0, Math.PI * 2);
+        ctx.arc(p.width/2, 0, PORTAL_EDGE_RADIUS, 0, Math.PI * 2);
         ctx.fill();
 
         ctx.shadowBlur = 20;
@@ -629,7 +620,7 @@ export default function App() {
         ctx.fill();
       });
 
-      objects.forEach(obj => obj.draw(ctx, config.trailIntensity, portals, config.twoSided, editedPortalId));
+      objects.forEach(obj => obj.draw(ctx, config.trailIntensity, portals, config.twoSided));
       if (config.debugOverlay) drawDebugOverlay(ctx, portals);
       animationId = requestAnimationFrame(render);
     };
@@ -651,6 +642,7 @@ export default function App() {
     for (const pt of currentPortals) {
       if (Math.hypot(pt.handle.x - p.x, pt.handle.y - p.y) < 30) {
         updateDragState({ id: pt.id, type: 'handle' });
+        lastPortalMotionTimestamp.current = e.timeStamp;
         return;
       }
     }
@@ -667,32 +659,36 @@ export default function App() {
     for (const pt of currentPortals) {
       if (Math.hypot(pt.x - p.x, pt.y - p.y) < 50) {
         updateDragState({ id: pt.id, type: 'portal' });
+        lastPortalMotionTimestamp.current = e.timeStamp;
         return;
       }
     }
   };
 
-  const moveActivePortal = useCallback((point: Point) => {
+  const moveActivePortal = useCallback((point: Point, timestamp: number) => {
     const dragState = dragStateRef.current;
     if ((dragState.type !== 'portal' && dragState.type !== 'handle') || !dragState.id) return;
 
-    const updated = movePortalForEditor(portalsRef.current, dragState.id, dragState.type, point);
+    const previous = portalsRef.current;
+    const updated = movePortalForEditor(previous, dragState.id, dragState.type, point);
+    const lastTimestamp = lastPortalMotionTimestamp.current;
+    const measuredDuration = lastTimestamp === null ? 1 / 60 : (timestamp - lastTimestamp) / 1000;
+    const duration = Number.isFinite(measuredDuration) && measuredDuration > 0
+      ? Math.max(1 / 240, Math.min(1, measuredDuration))
+      : 1 / 60;
+    const config = configRef.current;
+    resolveMovingPortalSweeps(objectsRef.current, previous, updated, {
+      duration,
+      twoSided: config.twoSided,
+      bounce: config.elasticity,
+    });
+    lastPortalMotionTimestamp.current = timestamp;
     portalsRef.current = updated;
     setPortals(updated);
   }, []);
 
   const finishActiveDrag = useCallback(() => {
-    const dragState = dragStateRef.current;
-    if ((dragState.type === 'portal' || dragState.type === 'handle') && dragState.id) {
-      const editedIndex = portalsRef.current.findIndex(portal => portal.id === dragState.id);
-      const editedPortal = portalsRef.current[editedIndex];
-      if (editedPortal) {
-        const linkedPortal = getLinkedPortal(portalsRef.current, editedIndex);
-        [editedPortal, linkedPortal].forEach(portal => {
-          if (portal) objectsRef.current.forEach(body => separateBodyFromEditedPortal(body, portal));
-        });
-      }
-    }
+    lastPortalMotionTimestamp.current = null;
     updateDragState({ id: null, type: null });
   }, [updateDragState]);
 
@@ -704,7 +700,7 @@ export default function App() {
     if (!rect) return;
     const p = { x: e.clientX - rect.left, y: e.clientY - rect.top };
 
-    moveActivePortal(p);
+    moveActivePortal(p, e.timeStamp);
     
     // Update global last pointer position for pinning
     lastPos.current = p;
@@ -727,7 +723,7 @@ export default function App() {
       if (!rect) return;
       const p = { x: event.clientX - rect.left, y: event.clientY - rect.top };
 
-      moveActivePortal(p);
+      moveActivePortal(p, event.timeStamp);
 
       lastPos.current = p;
     };
@@ -801,11 +797,14 @@ export default function App() {
     const p1 = { ...current[0], x: l.p1.x, y: l.p1.y, angle: l.p1.a };
     const p2 = { ...current[1], x: l.p2.x, y: l.p2.y, angle: l.p2.a };
     const updated = [withPortalVectors(p1), withPortalVectors(p2)];
+    const config = configRef.current;
+    resolveMovingPortalSweeps(objectsRef.current, current, updated, {
+      duration: 0.25,
+      twoSided: config.twoSided,
+      bounce: config.elasticity,
+    });
     portalsRef.current = updated;
     setPortals(updated);
-    updated.forEach(portal => {
-      objectsRef.current.forEach(body => separateBodyFromEditedPortal(body, portal));
-    });
   };
 
   return (
@@ -966,12 +965,16 @@ export default function App() {
                 onChange={e => {
                   const val = parseInt(e.target.value);
                   setConfig(prev => ({ ...prev, portalWidth: val }));
-                  const updated = portalsRef.current.map(portal => ({ ...portal, width: val }));
+                  const previous = portalsRef.current;
+                  const updated = previous.map(portal => ({ ...portal, width: val }));
+                  const config = configRef.current;
+                  resolveMovingPortalSweeps(objectsRef.current, previous, updated, {
+                    duration: 1 / 30,
+                    twoSided: config.twoSided,
+                    bounce: config.elasticity,
+                  });
                   portalsRef.current = updated;
                   setPortals(updated);
-                  updated.forEach(portal => {
-                    objectsRef.current.forEach(body => separateBodyFromEditedPortal(body, portal));
-                  });
                 }}
                 className="w-full accent-[#00a2ff] h-1"
               />
@@ -991,17 +994,21 @@ export default function App() {
             </div>
 
             <div className="space-y-3 pt-2">
-              <label className="flex items-center justify-between cursor-pointer group">
+              <div className="flex items-center justify-between group">
                 <span className="text-[10px] uppercase font-bold text-white/50 group-hover:text-white transition-colors flex items-center">
                   Two-Sided Entry <HelpTooltip text="If ON, objects can enter from either side. If OFF, the white handle and colored arrow mark the permitted front-entry side; the hatched plate is solid." />
                 </span>
-                <div 
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={config.twoSided}
+                  aria-label="Toggle two-sided portal entry"
                   className={`w-8 h-4 rounded-full transition-colors relative ${config.twoSided ? 'bg-[#00a2ff]' : 'bg-white/10'}`}
                   onClick={() => setConfig(prev => ({ ...prev, twoSided: !prev.twoSided }))}
                 >
                   <div className={`absolute top-1 w-2 h-2 rounded-full transition-all ${config.twoSided ? 'left-5 bg-white' : 'left-1 bg-white/40'}`} />
-                </div>
-              </label>
+                </button>
+              </div>
               <p className="text-[9px] text-white/20 italic leading-tight">
                 {config.twoSided ? "Objects can enter and exit from both sides." : "Arrow + white handle = entry side; hatching = solid back."}
               </p>
@@ -1262,7 +1269,7 @@ export default function App() {
                 <section>
                   <h3 className="text-[#00a2ff] uppercase text-[10px] font-bold tracking-[0.2em] mb-2 md:mb-3">04. Interaction</h3>
                   <ul className="list-disc list-inside space-y-1 md:space-y-2">
-                    <li><b>Drag</b> the portals to relocate the wormhole. A pair is non-traversable while one endpoint is being edited, and overlapping balls are moved clear on release.</li>
+                    <li><b>Drag</b> a portal to move the aperture physically through the scene. Its swept mouth can teleport balls, while its solid rim and one-sided back can impart momentum.</li>
                     <li><b>Rotate</b> via the white handle to change the exit trajectory.</li>
                     <li><b>Vacuum Mode</b> removes air damping only, allowing balls to preserve momentum in a vertical loop while gravity strength remains unchanged.</li>
                   </ul>

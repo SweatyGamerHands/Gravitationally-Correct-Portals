@@ -1,19 +1,9 @@
-import { PORTAL_COLLISION_EPSILON, PORTAL_EDGE_RADIUS } from './constants';
-import { worldPointToPortalLocal } from './portalTransform';
 import { withPortalVectors, type Point, type Portal } from './types';
 
 export const MAX_BALLS = 64;
 const SPAWN_GAP = 8;
 
 type CircularBody = Pick<Point, 'x' | 'y'> & { radius: number };
-
-export type EditableBody = CircularBody & {
-  oldX: number;
-  oldY: number;
-  vx?: number;
-  vy?: number;
-  trail?: Point[];
-};
 
 export const findAvailableBallSpawn = (
   bodies: readonly CircularBody[],
@@ -67,29 +57,3 @@ export const movePortalForEditor = (
   const angle = Math.atan2(point.y - portal.y, point.x - portal.x) - Math.PI / 2;
   return withPortalVectors({ ...portal, angle });
 });
-
-export const separateBodyFromEditedPortal = (body: EditableBody, portal: Portal): boolean => {
-  const local = worldPointToPortalLocal(body, portal);
-  const usableHalfWidth = portal.width / 2 - body.radius - PORTAL_EDGE_RADIUS;
-  const clearance = body.radius + PORTAL_EDGE_RADIUS + PORTAL_COLLISION_EPSILON;
-
-  if (usableHalfWidth < 0 || Math.abs(local.along) > usableHalfWidth || Math.abs(local.normal) >= clearance) {
-    return false;
-  }
-
-  const normalVelocity = (body.vx ?? 0) * portal.normal.x + (body.vy ?? 0) * portal.normal.y;
-  const side = Math.sign(local.normal) || -Math.sign(normalVelocity) || 1;
-  const correction = side * clearance - local.normal;
-  body.x += portal.normal.x * correction;
-  body.y += portal.normal.y * correction;
-
-  if (body.vx !== undefined && body.vy !== undefined && normalVelocity * side < 0) {
-    body.vx -= normalVelocity * portal.normal.x;
-    body.vy -= normalVelocity * portal.normal.y;
-  }
-
-  body.oldX = body.x;
-  body.oldY = body.y;
-  if (body.trail) body.trail.length = 0;
-  return true;
-};

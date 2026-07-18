@@ -1,4 +1,4 @@
-import { PORTAL_COLLISION_EPSILON, TELEPORT_COOLDOWN_SECONDS } from './constants';
+import { PORTAL_BACK_PLATE_HALF_THICKNESS, PORTAL_COLLISION_EPSILON, TELEPORT_COOLDOWN_SECONDS } from './constants';
 import { getPortalRimCollision, getSweptPortalRimCollision, type SweptPortalRimCollision } from './collisions';
 import { getCrossingIntersection, getLinkedPortal, isWithinPortalAperture, teleportBodyAtCrossing } from './portalTraversal';
 import type { Point, Portal } from './types';
@@ -63,7 +63,7 @@ export class Ball {
     }
   }
 
-  checkCrossing(portals: Portal[], twoSided: boolean, bounce: number, editedPortalId: string | null = null) {
+  checkCrossing(portals: Portal[], twoSided: boolean, bounce: number) {
     const oldPos = { x: this.oldX, y: this.oldY };
     const proposed = { x: this.x, y: this.y };
     let selected: PortalEvent | null = null;
@@ -84,14 +84,11 @@ export class Ball {
 
     for (let i = 0; i < portals.length; i++) {
       const entry = portals[i];
-      if (entry.id !== editedPortalId) {
-        const rimHit = getSweptPortalRimCollision(oldPos, proposed, this.radius, entry);
-        if (rimHit) consider({ kind: 'rim', t: rimHit.t, hit: rimHit });
-      }
+      const rimHit = getSweptPortalRimCollision(oldPos, proposed, this.radius, entry);
+      if (rimHit) consider({ kind: 'rim', t: rimHit.t, hit: rimHit });
 
       const exit = getLinkedPortal(portals, i);
-      const pairIsBeingEdited = entry.id === editedPortalId || exit?.id === editedPortalId;
-      if (this.cooldown <= 0 && exit && !pairIsBeingEdited) {
+      if (this.cooldown <= 0 && exit) {
         const crossing = getCrossingIntersection(oldPos, proposed, entry, this.radius);
         if (crossing) consider({ kind: 'crossing', t: crossing.t, entry, exit, crossing });
       }
@@ -138,7 +135,7 @@ export class Ball {
     this.oldY = this.y;
   }
 
-  constrain(width: number, height: number, portals: Portal[], bounce: number, twoSided: boolean, editedPortalId: string | null = null) {
+  constrain(width: number, height: number, portals: Portal[], bounce: number, twoSided: boolean) {
     // 1. Boundaries
     const margin = this.radius;
     if (this.y > height - margin) { this.y = height - margin; if (this.vy > 0) this.vy = -this.vy * bounce; this.oldX = this.x; this.oldY = this.y; }
@@ -148,7 +145,6 @@ export class Ball {
 
     // 2. Portal Statics (Endcaps and Persistent Blocked-Face Support)
     for (const p1 of portals) {
-        if (p1.id === editedPortalId) continue;
         const rimCollision = getPortalRimCollision({ x: this.x, y: this.y }, this.radius, p1);
         if (rimCollision) {
           let { x: nx, y: ny } = rimCollision.normal;
@@ -174,7 +170,7 @@ export class Ball {
           const dx = this.x - p1.x; const dy = this.y - p1.y;
           const distNormal = dx * p1.normal.x + dy * p1.normal.y;
           // Persistent Support: If ball is on back side and within support threshold
-          if (distNormal < 0 && distNormal > -(this.radius + 1.4)) {
+          if (distNormal < 0 && distNormal > -(this.radius + PORTAL_BACK_PLATE_HALF_THICKNESS + 0.3)) {
             const distAlong = dx * p1.dir.x + dy * p1.dir.y;
             if (Math.abs(distAlong) <= p1.width / 2) {
               this.blockedFaceSupport(p1);
@@ -199,7 +195,7 @@ export class Ball {
     const vty = this.vy - vNormal * ny;
     const distToPlane = (this.x - p.x) * nx + (this.y - p.y) * ny;
 
-    const clearance = this.radius + 1.1;
+    const clearance = this.radius + PORTAL_BACK_PLATE_HALF_THICKNESS;
     const overlapX = (distToPlane - (side * clearance)) * nx;
     const overlapY = (distToPlane - (side * clearance)) * ny;
 
@@ -218,7 +214,7 @@ export class Ball {
     const vNormal = this.vx * nx + this.vy * ny;
 
     const distToPlane = (this.x - p.x) * nx + (this.y - p.y) * ny;
-    const targetDist = -(this.radius + 1.1);
+    const targetDist = -(this.radius + PORTAL_BACK_PLATE_HALF_THICKNESS);
     const overlap = distToPlane - targetDist;
 
     // Being close to the back support plane is not enough to create a wall.
@@ -246,7 +242,7 @@ export class Ball {
     this.cooldown = TELEPORT_COOLDOWN_SECONDS;
   }
 
-  draw(ctx: CanvasRenderingContext2D, trailIntensity: number, portals: Portal[], twoSided: boolean, editedPortalId: string | null = null) {
+  draw(ctx: CanvasRenderingContext2D, trailIntensity: number, portals: Portal[], twoSided: boolean) {
     const speedSq = this.vx * this.vx + this.vy * this.vy;
     const heat = Math.min(1, speedSq / 720000);
     
@@ -256,7 +252,7 @@ export class Ball {
     for (let i = 0; i < portals.length; i++) {
         const p = portals[i];
         const exit = getLinkedPortal(portals, i);
-        if (!exit || p.id === editedPortalId || exit.id === editedPortalId) continue;
+        if (!exit) continue;
         const distAlong = (this.x - p.x) * p.dir.x + (this.y - p.y) * p.dir.y;
         if (isWithinPortalAperture({ along: distAlong }, p, this.radius)) {
             const d = (this.x - p.x) * p.normal.x + (this.y - p.y) * p.normal.y;
