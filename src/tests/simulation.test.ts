@@ -111,8 +111,8 @@ test('crossing eligibility uses center within aperture and leaves radius overlap
     assert.equal(overlappingRim, null);
 
     const justInside = getCrossingIntersection(
-      { x: edgeX - side * 0.5, y: portal.y - 20 },
-      { x: edgeX - side * 0.5, y: portal.y + 20 },
+      { x: edgeX - side * (radius + 0.5), y: portal.y - 20 },
+      { x: edgeX - side * (radius + 0.5), y: portal.y + 20 },
       portal,
       radius,
     );
@@ -151,29 +151,104 @@ test('back-face approach outside aperture is not eligible for support or crossin
 test('blocked back support does not stop tangential velocity before penetration', () => {
   const portal = withPortalVectors({ id: 'vertical', x: 100, y: 100, angle: Math.PI / 2, color: '#f90', width: 100 });
   const ball = new Ball(111.3, 100, 10, 1);
-  ball.oldX = 113.3;
-  ball.oldY = 100;
+  ball.vx = -2;
+  ball.vy = 0;
 
   ball.blockedFaceSupport(portal);
 
   assert.equal(ball.x, 111.3);
   assert.equal(ball.y, 100);
-  assert.equal(ball.x - ball.oldX, -2);
-  assert.equal(ball.y - ball.oldY, 0);
+  assert.equal(ball.vx, -2);
+  assert.equal(ball.vy, 0);
 });
 
 test('blocked back support preserves separating tangential velocity on penetration', () => {
   const portal = withPortalVectors({ id: 'vertical', x: 100, y: 100, angle: Math.PI / 2, color: '#f90', width: 100 });
   const ball = new Ball(110, 100, 10, 1);
-  ball.oldX = 105;
-  ball.oldY = 100;
+  ball.vx = 5;
+  ball.vy = 0;
 
   ball.blockedFaceSupport(portal);
 
   assert.equal(ball.x, 111.1);
   assert.equal(ball.y, 100);
-  assert.equal(ball.x - ball.oldX, 5);
-  assert.equal(ball.y - ball.oldY, 0);
+  assert.equal(ball.vx, 5);
+  assert.equal(ball.vy, 0);
+});
+
+
+test('zero explicit velocity stays zero even when old position is stale', () => {
+  const ball = new Ball(10, 10, 5, 1);
+  ball.oldX = 0;
+  ball.oldY = 0;
+
+  ball.update(1, () => ({ x: 0, y: 0 }), 1 / 60);
+
+  assert.equal(ball.vx, 0);
+  assert.equal(ball.vy, 0);
+  assert.equal(ball.x, 10);
+  assert.equal(ball.y, 10);
+});
+
+test('wall collision updates explicit velocity', () => {
+  const ball = new Ball(50, 98, 10, 1);
+  ball.vy = 120;
+
+  ball.constrain(100, 100, [], 0.5, true);
+
+  assert.equal(ball.y, 90);
+  assert.equal(ball.vy, -60);
+});
+
+test('endpoint collision updates explicit velocity', () => {
+  const portal = portals[0];
+  const edgeX = portal.x + portal.width / 2;
+  const ball = new Ball(edgeX + 10.5, portal.y, 10, 1);
+  ball.vx = -100;
+
+  ball.constrain(500, 500, [portal], 0.5, true);
+
+  assert.ok(ball.vx > 0);
+});
+
+test('blocked face impact updates explicit velocity with configured bounce', () => {
+  const portal = portals[0];
+  const ball = new Ball(portal.x, portal.y - 1, 10, 1);
+  ball.vy = 120;
+
+  ball.blockedFaceImpact(portal, -1, 0.5);
+
+  assert.equal(ball.vy, -60);
+});
+
+test('teleport cooldown is time based across substep counts', () => {
+  const a = new Ball(0, 0, 5, 1);
+  const b = new Ball(0, 0, 5, 1);
+  a.cooldown = 1 / 30;
+  b.cooldown = 1 / 30;
+
+  a.update(1, () => ({ x: 0, y: 0 }), 1 / 30);
+  for (let i = 0; i < 12; i++) b.update(1, () => ({ x: 0, y: 0 }), 1 / 360);
+
+  nearly(a.cooldown, 0);
+  nearly(b.cooldown, 0);
+});
+
+test('crossing selection chooses earliest portal hit regardless of array order', () => {
+  const far = withPortalVectors({ id: 'far', x: 100, y: 100, angle: 0, color: '#f90', width: 100 });
+  const near = withPortalVectors({ id: 'near', x: 100, y: 70, angle: 0, color: '#09f', width: 100 });
+  const farExit = withPortalVectors({ id: 'far-exit', x: 300, y: 100, angle: Math.PI, color: '#f90', width: 100 });
+  const nearExit = withPortalVectors({ id: 'near-exit', x: 300, y: 70, angle: Math.PI, color: '#09f', width: 100 });
+  const ball = new Ball(100, 40, 5, 1);
+  ball.oldX = 100;
+  ball.oldY = 40;
+  ball.x = 100;
+  ball.y = 120;
+  ball.vy = 9600;
+
+  ball.checkCrossing([far, farExit, near, nearExit], true, 0.5);
+
+  assert.ok(Math.abs(ball.x - nearExit.x) < 2);
 });
 
 test('dragged ball index is parsed only for active ball drags', () => {

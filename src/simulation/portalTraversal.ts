@@ -14,6 +14,7 @@ export const getCrossingIntersection = (oldPos: Point, newPos: Point, portal: Po
   const interY = oldPos.y + (newPos.y - oldPos.y) * t;
   const local = worldPointToPortalLocal({ x: interX, y: interY }, portal);
   if (!isWithinPortalAperture(local, portal, 0)) return null;
+  if (radius > 0 && Math.abs(local.along) > getPortalApertureHalfWidth(portal) - radius - PORTAL_APERTURE_RADIUS_EPSILON) return null;
   return { t, interX, interY, dotPrev: prevLocal.normal, local };
 };
 
