@@ -17,29 +17,22 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import {
-  TELEPORT_COOLDOWN_DISTANCE,
   FIXED_TIMESTEP,
   MAX_ACCUMULATED_TIME,
   computeGravityAt,
   getBaselineG,
-  getCrossingIntersection,
   getPortalLocal,
-  getPortalSegmentCollision,
   getScaledFrameDt,
-  integratePosition,
-  integrateVelocity,
-  isWithinPortalAperture,
   syncPinnedBallToPointer,
-  transformThroughPortal,
   type DragState,
 } from './simulation/physics';
+import { Ball } from './simulation/Ball';
 import { withPortalVectors, type Point, type Portal } from './simulation/types';
 import { rk4FieldStep } from './simulation/visualization';
 
 // --- Constants & Types ---
 const DEFAULT_SUBSTEPS = 12; 
 const GRID_RES = 30;
-const MAX_TRAIL = 80;
 const MAX_GRID_WARP_RADIUS = 28;
 const GRID_BREAK_MULTIPLIER = 2.5;
 
@@ -72,334 +65,6 @@ const HelpTooltip = ({ text }: { text: string }) => {
     </div>
   );
 };
-
-class Ball {
-  x: number;
-  y: number;
-  oldX: number;
-  oldY: number;
-  vx: number;
-  vy: number;
-  radius: number;
-  mass: number;
-  cooldown: number;
-  color: string;
-  trail: Point[];
-
-  constructor(x: number, y: number, r: number, m: number) {
-    this.x = x;
-    this.y = y;
-    this.oldX = x;
-    this.oldY = y;
-    this.vx = 0;
-    this.vy = 0;
-    this.radius = r;
-    this.mass = m;
-    this.cooldown = 0;
-    this.color = `hsl(${Math.random() * 60 + 190}, 90%, 65%)`;
-    this.trail = [];
-  }
-
-  update(
-    friction: number, 
-    gravityFn: (x: number, y: number) => Point, 
-    dt: number
-  ) {
-    const g = gravityFn(this.x, this.y);
-
-    this.oldX = this.x;
-    this.oldY = this.y;
-
-    const nextVelocity = integrateVelocity({ x: this.vx, y: this.vy }, g, friction, dt);
-    const nextPosition = integratePosition({ x: this.x, y: this.y }, nextVelocity, dt);
-    this.vx = nextVelocity.x;
-    this.vy = nextVelocity.y;
-    this.x = nextPosition.x;
-    this.y = nextPosition.y;
-
-    if (this.cooldown > 0) this.cooldown = Math.max(0, this.cooldown - Math.hypot(this.x - this.oldX, this.y - this.oldY));
-    
-    if (Math.random() > 0.8) {
-      this.trail.push({ x: this.x, y: this.y });
-      if (this.trail.length > MAX_TRAIL) this.trail.shift();
-    }
-  }
-
-  checkCrossing(portals: Portal[], twoSided: boolean, bounce: number) {
-    for (let i = 0; i < 2; i++) {
-        const p1 = portals[i];
-        const p2 = portals[(i+1)%2];
-        
-        const crossing = getCrossingIntersection(
-          { x: this.oldX, y: this.oldY },
-          { x: this.x, y: this.y },
-          p1,
-          this.radius
-        );
-        if (!crossing) continue;
-
-        const fromFront = crossing.dotPrev > 0;
-        if (this.cooldown > 0) continue;
-
-        if (twoSided || fromFront) {
-            this.teleport(p1, p2, crossing.interX, crossing.interY);
-            return;
-        } else {
-            // One-sided portal crossing: Blocked-face Impact (Rebound)
-            this.blockedFaceImpact(p1, crossing.dotPrev);
-            return;
-        }
-    }
-  }
-
-  constrain(width: number, height: number, portals: Portal[], bounce: number, twoSided: boolean) {
-    // 1. Boundaries
-    const margin = this.radius;
-    if (this.y > height - margin) { this.y = height - margin; this.vy = -this.vy * bounce; this.oldY = this.y; }
-    if (this.x < margin) { this.x = margin; this.vx = -this.vx * bounce; this.oldX = this.x; }
-    if (this.x > width - margin) { this.x = width - margin; this.vx = -this.vx * bounce; this.oldX = this.x; }
-    if (this.y < margin) { this.y = margin; this.vy = -this.vy * bounce; this.oldY = this.y; }
-
-    // 2. Portal Statics (Endcaps and Persistent Blocked-Face Support)
-    for (const p1 of portals) {
-        const tipDist = p1.width / 2;
-        const tips = [
-          { x: p1.x + p1.dir.x * tipDist, y: p1.y + p1.dir.y * tipDist },
-          { x: p1.x - p1.dir.x * tipDist, y: p1.y - p1.dir.y * tipDist }
-        ];
-
-        for (const tip of tips) {
-          const dx = this.x - tip.x; const dy = this.y - tip.y;
-          const distSq = dx * dx + dy * dy;
-          const minDist = this.radius + 1; 
-          if (distSq < minDist * minDist) {
-            const dist = Math.sqrt(distSq) || 0.1;
-            const nx = dx / dist; const ny = dy / dist;
-            const overlap = minDist - dist;
-            this.x += nx * overlap; this.y += ny * overlap;
-            const dot = this.vx * nx + this.vy * ny;
-            if (dot < 0) {
-              this.vx = (this.vx - 2 * dot * nx) * bounce;
-              this.vy = (this.vy - 2 * dot * ny) * bounce;
-            }
-            this.oldX = this.x;
-            this.oldY = this.y;
-          }
-        }
-
-        const edgeHit = getPortalSegmentCollision({ x: this.x, y: this.y }, this.radius, p1);
-        if (edgeHit) {
-          const { normal, overlap } = edgeHit;
-          this.x += normal.x * overlap;
-          this.y += normal.y * overlap;
-          const vx = this.x - this.oldX;
-          const vy = this.y - this.oldY;
-          const dot = vx * normal.x + vy * normal.y;
-          if (dot < 0) {
-            const rx = vx - 2 * dot * normal.x;
-            const ry = vy - 2 * dot * normal.y;
-            this.oldX = this.x - rx * bounce;
-            this.oldY = this.y - ry * bounce;
-          } else {
-            this.oldX += normal.x * overlap;
-            this.oldY += normal.y * overlap;
-          }
-        }
-
-        if (!twoSided) {
-          const local = getPortalLocal({ x: this.x, y: this.y }, p1);
-          // Persistent Support: If ball is on back side and physically overlaps the aperture
-          if (local.normal < 0 && local.normal > -(this.radius + 1.4) && isWithinPortalAperture(local, p1, this.radius)) {
-            this.blockedFaceSupport(p1);
-          }
-        }
-    }
-  }
-
-  blockedFaceImpact(p: Portal, dotPrev: number) {
-    const nx = p.normal.x;
-    const ny = p.normal.y;
-    const vNormal = this.vx * nx + this.vy * ny;
-    
-    const vtx = this.vx - vNormal * nx;
-    const vty = this.vy - vNormal * ny;
-    
-    const side = Math.sign(dotPrev); 
-    const distToPlane = (this.x - p.x) * nx + (this.y - p.y) * ny;
-    
-    const clearance = this.radius + 1.1;
-    const overlapX = (distToPlane - (side * clearance)) * nx;
-    const overlapY = (distToPlane - (side * clearance)) * ny;
-    
-    this.x -= overlapX;
-    this.y -= overlapY;
-    
-    const restitution = 0.2;
-    const rx = vtx - (vNormal * nx) * restitution;
-    const ry = vty - (vNormal * ny) * restitution;
-    
-    this.vx = rx;
-    this.vy = ry;
-    this.oldX = this.x;
-    this.oldY = this.y;
-  }
-
-  blockedFaceSupport(p: Portal) {
-    const nx = p.normal.x;
-    const ny = p.normal.y;
-    const vNormal = this.vx * nx + this.vy * ny;
-    
-    const vtx = this.vx - vNormal * nx;
-    const vty = this.vy - vNormal * ny;
-    
-    const distToPlane = (this.x - p.x) * nx + (this.y - p.y) * ny;
-    const targetDist = -(this.radius + 1.1);
-    const overlap = distToPlane - targetDist;
-    
-    this.x -= overlap * nx;
-    this.y -= overlap * ny;
-    
-    this.vx = (vNormal > 0) ? vtx : this.vx;
-    this.vy = (vNormal > 0) ? vty : this.vy;
-    this.oldX = this.x;
-    this.oldY = this.y;
-  }
-
-  teleport(entry: Portal, exit: Portal, interX: number, interY: number) {
-    // 1. Residual post-intersection displacement still owed this frame
-    const resX = this.x - interX;
-    const resY = this.y - interY;
-
-    // 2. Mapped crossing coordinate onto the Exit Portal plane
-    const interLocal = getPortalLocal({ x: interX, y: interY }, entry);
-    const dLocInter = interLocal.along;
-    const nLocInter = interLocal.normal;
-
-    const mappedInterX = exit.x + dLocInter * exit.dir.x - nLocInter * exit.normal.x;
-    const mappedInterY = exit.y + dLocInter * exit.dir.y - nLocInter * exit.normal.y;
-
-    // 3. Decompose velocity AND residual motion against Entry Portal basis
-    const mappedVelocity = transformThroughPortal({ x: this.vx, y: this.vy }, entry, exit);
-    const resAlong = resX * entry.dir.x + resY * entry.dir.y;
-    const resNorm = resX * entry.normal.x + resY * entry.normal.y;
-
-    // 4. Reconstruct in Exit Portal basis (inverting normal traversing the space-bridge)
-    const newVx = mappedVelocity.x;
-    const newVy = mappedVelocity.y;
-    const newResX = resAlong * exit.dir.x - resNorm * exit.normal.x;
-    const newResY = resAlong * exit.dir.y - resNorm * exit.normal.y;
-
-    // 5. Add Explicit Outward Clearance to prevent precision re-collision 
-    const flowSign = Math.sign(newVx * exit.normal.x + newVy * exit.normal.y) || 1;
-    const clearanceEps = 1.0; 
-
-    // Final accurate coordinate incorporating residual vector from interection plus epsilon
-    this.x = mappedInterX + newResX + exit.normal.x * flowSign * clearanceEps;
-    this.y = mappedInterY + newResY + exit.normal.y * flowSign * clearanceEps;
-
-    // Store transformed velocity explicitly in px/sec; old position is only the crossing segment anchor.
-    this.vx = newVx;
-    this.vy = newVy;
-    this.oldX = this.x;
-    this.oldY = this.y;
-    
-    this.cooldown = TELEPORT_COOLDOWN_DISTANCE;
-    this.trail = []; 
-  }
-
-  draw(ctx: CanvasRenderingContext2D, trailIntensity: number, portals: Portal[], twoSided: boolean) {
-    const speedSq = this.vx * this.vx + this.vy * this.vy;
-    const heat = Math.min(1, speedSq / 720000);
-    
-    this.drawTrail(ctx, trailIntensity, heat);
-
-    let overlap: { entry: Portal; exit: Portal; d: number } | null = null;
-    for (let i = 0; i < 2; i++) {
-        const p = portals[i];
-        const local = getPortalLocal({ x: this.x, y: this.y }, p);
-        if (isWithinPortalAperture(local, p, this.radius) && Math.abs(local.normal) < this.radius) {
-            // If one-sided, only allow dual rendering if the ball center is on the front face (d > 0)
-            if (twoSided || local.normal >= 0) {
-              overlap = { entry: p, exit: portals[(i + 1) % 2], d: local.normal };
-              break;
-            }
-        }
-    }
-
-    if (overlap) {
-        this.renderDual(ctx, overlap.entry, overlap.exit, overlap.d, heat);
-    } else {
-        this.renderBody(ctx, this.x, this.y, heat);
-    }
-  }
-
-  drawTrail(ctx: CanvasRenderingContext2D, trailIntensity: number, heat: number) {
-    if (this.trail.length > 2) {
-      ctx.save();
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      const batchSize = Math.ceil(this.trail.length / 8);
-      for (let b = 0; b < this.trail.length - 1; b += batchSize) {
-        ctx.beginPath();
-        ctx.moveTo(this.trail[b].x, this.trail[b].y);
-        const nextBatch = Math.min(b + batchSize, this.trail.length - 1);
-        for (let i = b + 1; i <= nextBatch; i++) ctx.lineTo(this.trail[i].x, this.trail[i].y);
-        const progress = b / this.trail.length;
-        ctx.lineWidth = this.radius * (0.2 + 0.6 * progress);
-        ctx.strokeStyle = this.color;
-        ctx.globalAlpha = progress * (0.05 + heat * 0.6) * trailIntensity;
-        ctx.stroke();
-      }
-      ctx.restore();
-    }
-  }
-
-  renderBody(ctx: CanvasRenderingContext2D, x: number, y: number, heat: number) {
-    ctx.save();
-    ctx.shadowBlur = 10 + heat * 20;
-    ctx.shadowColor = heat > 0.5 ? '#fff' : this.color;
-    ctx.beginPath();
-    ctx.arc(x, y, this.radius, 0, Math.PI * 2);
-    const grad = ctx.createRadialGradient(x, y, 0, x, y, this.radius);
-    grad.addColorStop(0, '#fff');
-    grad.addColorStop(0.4, heat > 0.3 ? `hsl(${40 - heat * 40}, 100%, 70%)` : this.color);
-    grad.addColorStop(1, heat > 0.3 ? `hsl(${20 - heat * 20}, 100%, 50%)` : this.color);
-    ctx.fillStyle = grad;
-    ctx.fill();
-    ctx.restore();
-  }
-
-  renderDual(ctx: CanvasRenderingContext2D, entry: Portal, exit: Portal, nLoc: number, heat: number) {
-    // Basis Vector Clone Placement
-    const dLoc = getPortalLocal({ x: this.x, y: this.y }, entry).along;
-    // Parameter 'nLoc' passed from overlap check is exactly the Normal distance
-    const isFront = nLoc >= 0;
-    
-    // Mapped clone placement exactly identical to teleport basis mapping
-    const cloneX = exit.x + dLoc * exit.dir.x - nLoc * exit.normal.x;
-    const cloneY = exit.y + dLoc * exit.dir.y - nLoc * exit.normal.y;
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.translate(entry.x, entry.y);
-    ctx.rotate(entry.angle);
-    ctx.rect(-2000, isFront ? 0 : -2000, 4000, 2000); 
-    ctx.clip();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    this.renderBody(ctx, this.x, this.y, heat);
-    ctx.restore();
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.translate(exit.x, exit.y);
-    ctx.rotate(exit.angle);
-    ctx.rect(-2000, isFront ? -2000 : 0, 4000, 2000); 
-    ctx.clip();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    this.renderBody(ctx, cloneX, cloneY, heat);
-    ctx.restore();
-  }
-}
 
 // --- Main Component ---
 export default function App() {
@@ -1059,13 +724,13 @@ export default function App() {
   }, [portals, updateDragState]);
 
   const addBall = () => {
-    const w = canvasRef.current?.width || 800;
+    const w = canvasSizeRef.current.width || canvasRef.current?.clientWidth || 800;
     objectsRef.current.push(new Ball(w / 2, 100, config.size, config.mass));
     setEntityCount(objectsRef.current.length);
   };
 
   const reset = () => {
-    const w = canvasRef.current?.width || 800;
+    const w = canvasSizeRef.current.width || canvasRef.current?.clientWidth || 800;
     objectsRef.current = [new Ball(w / 2, 100, config.size, config.mass)];
     setEntityCount(objectsRef.current.length);
   };
@@ -1076,8 +741,8 @@ export default function App() {
   };
 
   const toggleLayout = () => {
-    const w = canvasRef.current?.width || 800;
-    const h = canvasRef.current?.height || 600;
+    const w = canvasSizeRef.current.width || canvasRef.current?.clientWidth || 800;
+    const h = canvasSizeRef.current.height || canvasRef.current?.clientHeight || 600;
     const cx = w / 2;
     const cy = h / 2;
     
@@ -1526,11 +1191,11 @@ export default function App() {
               
               <div className="space-y-6 md:space-y-8 text-sm leading-relaxed text-neutral-400">
                 <section>
-                  <h3 className="text-[#00a2ff] uppercase text-[10px] font-bold tracking-[0.2em] mb-2 md:mb-3">01. Verlet Integration</h3>
+                  <h3 className="text-[#00a2ff] uppercase text-[10px] font-bold tracking-[0.2em] mb-2 md:mb-3">01. Fixed-Step Integration</h3>
                   <p>
-                    Unlike standard Euler physics which simply adds velocity to position, this simulation uses <b>Verlet Integration</b>. 
-                    It calculates motion based on the difference between the <i>current</i> and <i>previous</i> positions. 
-                    This is mathematically more stable for constant constraints (like the portal boundaries).
+                    This simulation uses <b>fixed-step semi-implicit Euler integration</b> with explicit velocity state. 
+                    It advances velocity from the sampled acceleration, then advances position in fixed-size simulation quanta. 
+                    This keeps frame-rate variation out of body motion while retaining explicit velocity for collisions.
                   </p>
                 </section>
 
@@ -1547,7 +1212,7 @@ export default function App() {
                   <h3 className="text-[#00a2ff] uppercase text-[10px] font-bold tracking-[0.2em] mb-2 md:mb-3">03. Spacetime Curvature</h3>
                   <p>
                     The background grid isn't just decoration—it's a <b>deformation map</b>. Each node in the grid calculates 
-                    the local gravitational potential and shifts its position accordingly.
+                    the local acceleration field and shifts its position accordingly.
                   </p>
                 </section>
 
