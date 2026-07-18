@@ -8,8 +8,10 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit",
-    "test": "tsx --test src/tests/simulation.test.ts"
+    "typecheck": "tsc --noEmit",
+    "lint": "npm run typecheck",
+    "test": "node --import tsx --test src/tests/simulation.test.ts",
+    "test:coverage": "node --experimental-test-coverage --test-coverage-lines=90 --test-coverage-functions=80 --test-coverage-branches=75 --import tsx --test src/tests/simulation.test.ts"
   },
   "dependencies": {
     "lucide-react": "^0.546.0",

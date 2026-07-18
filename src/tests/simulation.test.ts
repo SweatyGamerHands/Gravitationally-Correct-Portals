@@ -5,9 +5,11 @@ import {
   computeGravityAt,
   getBaselineG,
   getCrossingIntersection,
+  getLinkedPortal,
   getPinnedBallIndex,
   getPortalLocal,
   getPortalSegmentCollision,
+  getSweptPortalRimCollision,
   getScaledFrameDt,
   integratePosition,
   integrateVelocity,
@@ -96,7 +98,7 @@ test('explicit velocity integration uses seconds for velocity and acceleration',
   assert.ok(Math.abs(nextPosition.y - 2 / 15) < 1e-9);
 });
 
-test('crossing eligibility uses center within aperture and leaves radius overlap to rim collision', () => {
+test('crossing eligibility requires the full ball to clear the solid rim', () => {
   const portal = portals[0];
   const radius = 10;
 
@@ -111,8 +113,8 @@ test('crossing eligibility uses center within aperture and leaves radius overlap
     assert.equal(overlappingRim, null);
 
     const justInside = getCrossingIntersection(
-      { x: edgeX - side * (radius + 0.5), y: portal.y - 20 },
-      { x: edgeX - side * (radius + 0.5), y: portal.y + 20 },
+      { x: edgeX - side * (radius + 1.5), y: portal.y - 20 },
+      { x: edgeX - side * (radius + 1.5), y: portal.y + 20 },
       portal,
       radius,
     );
@@ -132,6 +134,21 @@ test('grazing an aperture endcap collides with portal edge capsule', () => {
 
   const clearMiss = getPortalSegmentCollision({ x: edgeX + radius + 2, y: portal.y }, radius, portal);
   assert.equal(clearMiss, null);
+});
+
+test('swept rim collision detects a ball that tunnels past an endpoint', () => {
+  const portal = portals[0];
+  const edgeX = portal.x + portal.width / 2;
+  const hit = getSweptPortalRimCollision(
+    { x: edgeX - 0.5, y: portal.y - 40 },
+    { x: edgeX - 0.5, y: portal.y + 40 },
+    10,
+    portal,
+  );
+
+  assert.ok(hit);
+  assert.ok(hit.t > 0 && hit.t < 1);
+  assert.ok(hit.normal.y < 0);
 });
 
 test('back-face approach outside aperture is not eligible for support or crossing', () => {
@@ -211,6 +228,18 @@ test('endpoint collision updates explicit velocity', () => {
   assert.ok(ball.vx > 0);
 });
 
+test('exact endpoint overlap has a stable fallback normal', () => {
+  const portal = portals[0];
+  const edgeX = portal.x + portal.width / 2;
+  const ball = new Ball(edgeX, portal.y, 10, 1);
+  ball.vy = 100;
+
+  ball.constrain(500, 500, [portal], 0.5, true);
+
+  assert.ok(ball.y < portal.y);
+  assert.equal(ball.vy, -50);
+});
+
 test('blocked face impact updates explicit velocity with configured bounce', () => {
   const portal = portals[0];
   const ball = new Ball(portal.x, portal.y - 1, 10, 1);
@@ -249,6 +278,75 @@ test('crossing selection chooses earliest portal hit regardless of array order',
   ball.checkCrossing([far, farExit, near, nearExit], true, 0.5);
 
   assert.ok(Math.abs(ball.x - nearExit.x) < 2);
+});
+
+test('adjacent portal pairs link reciprocally', () => {
+  const four = [
+    withPortalVectors({ id: 'a', x: 0, y: 0, angle: 0, color: '#f90', width: 100 }),
+    withPortalVectors({ id: 'b', x: 100, y: 0, angle: Math.PI, color: '#09f', width: 100 }),
+    withPortalVectors({ id: 'c', x: 200, y: 0, angle: 0, color: '#f90', width: 100 }),
+    withPortalVectors({ id: 'd', x: 300, y: 0, angle: Math.PI, color: '#09f', width: 100 }),
+  ];
+
+  assert.equal(getLinkedPortal(four, 0)?.id, 'b');
+  assert.equal(getLinkedPortal(four, 1)?.id, 'a');
+  assert.equal(getLinkedPortal(four, 2)?.id, 'd');
+  assert.equal(getLinkedPortal(four, 3)?.id, 'c');
+});
+
+test('runtime portal event resolution prevents high-speed rim tunneling', () => {
+  const portal = portals[0];
+  const edgeX = portal.x + portal.width / 2;
+  const ball = new Ball(edgeX - 0.5, portal.y - 40, 10, 1);
+  ball.oldX = ball.x;
+  ball.oldY = ball.y;
+  ball.y = portal.y + 40;
+  ball.vy = 9600;
+
+  ball.checkCrossing(portals, true, 0.5);
+
+  assert.ok(ball.y < portal.y);
+  assert.ok(ball.vy < 0);
+  assert.equal(ball.cooldown, 0);
+});
+
+test('dual rendering clips both portal slices to the physically emerged half', () => {
+  const ball = new Ball(100, 105, 10, 1);
+  const rects: Array<{ y: number; height: number }> = [];
+  const ctx = {
+    getTransform: () => ({}),
+    save: () => undefined,
+    beginPath: () => undefined,
+    translate: () => undefined,
+    rotate: () => undefined,
+    rect: (_x: number, y: number, _width: number, height: number) => rects.push({ y, height }),
+    clip: () => undefined,
+    setTransform: () => undefined,
+    restore: () => undefined,
+  } as unknown as CanvasRenderingContext2D;
+  ball.renderBody = () => undefined;
+
+  ball.renderDual(ctx, portals[0], portals[1], 5, 0);
+  assert.deepEqual(rects, [{ y: 0, height: 2000 }, { y: 0, height: 2000 }]);
+
+  rects.length = 0;
+  ball.renderDual(ctx, portals[0], portals[1], -5, 0);
+  assert.deepEqual(rects, [{ y: -2000, height: 2000 }, { y: -2000, height: 2000 }]);
+});
+
+test('rim-overlapping balls are not dual-rendered as successful traversals', () => {
+  const portal = portals[0];
+  const ball = new Ball(portal.x + portal.width / 2 - 0.5, portal.y + 2, 10, 1);
+  let bodyDraws = 0;
+  let dualDraws = 0;
+  ball.renderBody = () => { bodyDraws++; };
+  ball.renderDual = () => { dualDraws++; };
+  ball.drawTrail = () => undefined;
+
+  ball.draw({} as CanvasRenderingContext2D, 1, portals, true);
+
+  assert.equal(bodyDraws, 1);
+  assert.equal(dualDraws, 0);
 });
 
 test('dragged ball index is parsed only for active ball drags', () => {
@@ -334,6 +432,33 @@ test('aperture visibility is smooth and finite at center and endpoints', () => {
   assert.ok(Math.abs(edgeA - edgeB) < 0.001);
 });
 
+test('one-sided portal gravity is present at the front aperture plane only', () => {
+  const portal = portals[0];
+  const atPlane = apertureVisibilityWeight({ x: portal.x, y: portal.y }, portal, false);
+  const behind = apertureVisibilityWeight({ x: portal.x, y: portal.y - 0.001 }, portal, false);
+
+  assert.ok(atPlane > 0);
+  assert.equal(behind, 0);
+});
+
+test('portal gravity leakage scales the field deviation instead of saturating in normalization', () => {
+  const fieldPortals = [
+    withPortalVectors({ id: 'entry', x: 100, y: 100, angle: 0, color: '#f90', width: 100 }),
+    withPortalVectors({ id: 'exit', x: 300, y: 100, angle: Math.PI / 2, color: '#09f', width: 100 }),
+  ];
+  const point = { x: 100, y: 120 };
+  const config = { vacuum: false, gravity: 1, correctGravity: true, twoSided: true, maxDepth: 1, fieldClamp: 10000 };
+  const baseline = computeGravityAt(point.x, point.y, fieldPortals, { ...config, portalPull: 0 });
+  const one = computeGravityAt(point.x, point.y, fieldPortals, { ...config, portalPull: 1 });
+  const two = computeGravityAt(point.x, point.y, fieldPortals, { ...config, portalPull: 2 });
+  const three = computeGravityAt(point.x, point.y, fieldPortals, { ...config, portalPull: 3 });
+  const deviation = (sample: Point) => Math.hypot(sample.x - baseline.x, sample.y - baseline.y);
+
+  assert.deepEqual(baseline, { x: 0, y: 800 });
+  nearly(deviation(two), deviation(one) * 2);
+  nearly(deviation(three), deviation(one) * 3);
+});
+
 test('field recursion is deterministic bounded and two-sided aware', () => {
   const cfg = { vacuum: false, gravity: 1, correctGravity: true, portalPull: 1, twoSided: true, maxDepth: 4, fieldClamp: 1000 };
   const a = sampleField({ x: 100, y: 120 }, portals, cfg);
@@ -342,6 +467,27 @@ test('field recursion is deterministic bounded and two-sided aware', () => {
   assert.ok(speed(a.acceleration) <= 1000 + 1e-9);
   const one = apertureVisibilityWeight({ x: portals[0].x, y: portals[0].y - 20 }, portals[0], false);
   assert.equal(one, 0);
+});
+
+test('recursive field branches compose acceleration back into the sample frame', () => {
+  const recursivePortals = [
+    withPortalVectors({ id: 'a', x: 0, y: 0, angle: 0, color: '#f90', width: 200 }),
+    withPortalVectors({ id: 'b', x: 100, y: 0, angle: Math.PI, color: '#09f', width: 200 }),
+    withPortalVectors({ id: 'c', x: 100, y: -20, angle: 0, color: '#f90', width: 200 }),
+    withPortalVectors({ id: 'd', x: 200, y: -20, angle: Math.PI / 2, color: '#09f', width: 200 }),
+  ];
+  const sample = sampleField(
+    { x: 0, y: 20 },
+    recursivePortals,
+    { gravity: 1, correctGravity: true, portalPull: 1, twoSided: true, maxDepth: 3, fieldClamp: 10000 },
+  );
+  const composed = sample.contributions.find(contribution => contribution.portalId === 'c' && contribution.depth === 2);
+
+  assert.ok(composed);
+  assert.ok(sample.contributions.some(contribution => contribution.depth === 3));
+  assert.ok(sample.contributions.every(contribution => contribution.depth <= 3));
+  nearly(composed.vector.x, -800);
+  nearly(composed.vector.y, 0);
 });
 
 test('zero gravity high speed portal crossing preserves speed', () => {

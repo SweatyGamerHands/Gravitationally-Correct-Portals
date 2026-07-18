@@ -17,6 +17,8 @@ The local point returns to world space as:
 p = C + along * t + normal * n
 ```
 
+Portal arrays contain adjacent reciprocal pairs: indices `0 <-> 1`, `2 <-> 3`, and so on. An unpaired final portal is inert rather than silently linking into a ring.
+
 ## Portal transform
 
 Entry-to-exit mapping preserves the aperture coordinate and flips the through-plane normal:
@@ -45,7 +47,7 @@ The authoritative field sampler is `sampleField` / `computeGravityAt`. It starts
 - optional one-sided front-face rejection,
 - inverse-square-style range falloff.
 
-Each branch transports the gravity vector from the linked side through the canonical acceleration transform. Direct and transported branches are normalized so portal gravity replaces part of the ordinary field instead of adding unlimited full-strength gravity vectors. Recursive branches are limited by `maxDepth`, attenuated geometrically, and clamped by `fieldClamp` to avoid runaway feedback for portal-facing-portal setups.
+Each branch transports the gravity vector from the linked side through the canonical acceleration transform. Direct and transported branches are normalized into a unit-leakage field, then `portalPull` linearly scales that field's deviation from ambient gravity. Recursive branches compose their vector transforms back into the original sample frame, are limited by `maxDepth`, attenuated geometrically, and clamped by `fieldClamp` to avoid runaway feedback for portal-facing-portal setups.
 
 Because this is a blended vector field, it is intentionally educational and coherent rather than a claim of exact conservative physics.
 
@@ -55,7 +57,7 @@ Live objects use explicit velocity state. The render loop accumulates elapsed ti
 
 Portal crossings are swept from previous to proposed positions. The earliest plane intersection inside the finite aperture maps the crossing point, velocity, and remaining displacement through the same canonical transform. A small separation epsilon prevents immediate precision recrossing without acting as the primary correctness mechanism.
 
-Rim geometry is treated as a capsule around the aperture endpoints/segment. Grazes outside the usable opening collide with the rim instead of teleporting.
+Rim geometry is treated as circular endcaps at the aperture endpoints. Traversal requires the entire body to clear those endcaps. Both traversal and rim impacts use swept time-of-impact tests, so a fast body cannot tunnel through a rim between fixed steps.
 
 ## Visualization strategy
 

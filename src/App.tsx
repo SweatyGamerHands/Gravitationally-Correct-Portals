@@ -21,7 +21,6 @@ import {
   MAX_ACCUMULATED_TIME,
   computeGravityAt,
   getBaselineG,
-  getCrossingIntersection,
   getPortalLocal,
   getScaledFrameDt,
   syncPinnedBallToPointer,
@@ -34,7 +33,6 @@ import { rk4FieldStep } from './simulation/visualization';
 // --- Constants & Types ---
 const DEFAULT_SUBSTEPS = 12; 
 const GRID_RES = 30;
-const MAX_TRAIL = 80;
 const MAX_GRID_WARP_RADIUS = 28;
 const GRID_BREAK_MULTIPLIER = 2.5;
 

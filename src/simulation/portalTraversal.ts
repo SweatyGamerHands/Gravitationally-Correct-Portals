@@ -1,9 +1,19 @@
 import type { Point, Portal } from './types';
-import { PORTAL_APERTURE_RADIUS_EPSILON, TRAVERSAL_EPSILON } from './constants';
+import { PORTAL_APERTURE_RADIUS_EPSILON, PORTAL_EDGE_RADIUS, TRAVERSAL_EPSILON } from './constants';
 import { mapPointThroughPortal, mapResidualDisplacementThroughPortal, mapVelocityThroughPortal, worldPointToPortalLocal } from './portalTransform';
 
 export const getPortalApertureHalfWidth = (portal: Portal) => portal.width / 2;
-export const isWithinPortalAperture = (local: { along: number }, portal: Portal, radius = 0) => Math.abs(local.along) <= getPortalApertureHalfWidth(portal) + radius + PORTAL_APERTURE_RADIUS_EPSILON;
+export const isWithinPortalAperture = (local: { along: number }, portal: Portal, radius = 0) => {
+  const usableHalfWidth = getPortalApertureHalfWidth(portal) - radius - PORTAL_EDGE_RADIUS;
+  return usableHalfWidth >= 0 && Math.abs(local.along) <= usableHalfWidth + PORTAL_APERTURE_RADIUS_EPSILON;
+};
+
+// Portals are stored as adjacent reciprocal pairs: [A, B, C, D] means
+// A <-> B and C <-> D. An unpaired final portal is intentionally inert.
+export const getLinkedPortal = (portals: Portal[], index: number): Portal | null => {
+  const linkedIndex = index % 2 === 0 ? index + 1 : index - 1;
+  return portals[linkedIndex] ?? null;
+};
 
 export const getCrossingIntersection = (oldPos: Point, newPos: Point, portal: Portal, radius = 0) => {
   const prevLocal = worldPointToPortalLocal(oldPos, portal);
@@ -13,8 +23,7 @@ export const getCrossingIntersection = (oldPos: Point, newPos: Point, portal: Po
   const interX = oldPos.x + (newPos.x - oldPos.x) * t;
   const interY = oldPos.y + (newPos.y - oldPos.y) * t;
   const local = worldPointToPortalLocal({ x: interX, y: interY }, portal);
-  if (!isWithinPortalAperture(local, portal, 0)) return null;
-  if (radius > 0 && Math.abs(local.along) > getPortalApertureHalfWidth(portal) - radius - PORTAL_APERTURE_RADIUS_EPSILON) return null;
+  if (!isWithinPortalAperture(local, portal, radius)) return null;
   return { t, interX, interY, dotPrev: prevLocal.normal, local };
 };
 

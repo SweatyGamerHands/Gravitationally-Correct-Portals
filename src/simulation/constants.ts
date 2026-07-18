@@ -6,6 +6,7 @@ export const MAX_ACCUMULATED_TIME = 0.12;
 export const MAX_FRAME_DT = 1 / 30;
 export const PORTAL_APERTURE_RADIUS_EPSILON = 0.001;
 export const PORTAL_EDGE_RADIUS = 1;
+export const PORTAL_COLLISION_EPSILON = 0.001;
 export const TRAVERSAL_EPSILON = 0.75;
 export const TELEPORT_COOLDOWN_DISTANCE = 8;
 export const TELEPORT_COOLDOWN_SECONDS = 1 / 30;

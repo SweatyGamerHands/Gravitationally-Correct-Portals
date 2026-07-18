@@ -1,8 +1,15 @@
-import { TELEPORT_COOLDOWN_SECONDS } from './constants';
-import { getCrossingIntersection, teleportBodyAtCrossing } from './portalTraversal';
+import { PORTAL_COLLISION_EPSILON, TELEPORT_COOLDOWN_SECONDS } from './constants';
+import { getPortalRimCollision, getSweptPortalRimCollision, type SweptPortalRimCollision } from './collisions';
+import { getCrossingIntersection, getLinkedPortal, isWithinPortalAperture, teleportBodyAtCrossing } from './portalTraversal';
 import type { Point, Portal } from './types';
 
 const MAX_TRAIL = 80;
+const EVENT_TIME_EPSILON = 1e-9;
+
+type PortalCrossing = NonNullable<ReturnType<typeof getCrossingIntersection>>;
+type PortalEvent =
+  | { kind: 'crossing'; t: number; entry: Portal; exit: Portal; crossing: PortalCrossing }
+  | { kind: 'rim'; t: number; hit: SweptPortalRimCollision };
 
 export class Ball {
   x: number;
@@ -57,23 +64,41 @@ export class Ball {
   }
 
   checkCrossing(portals: Portal[], twoSided: boolean, bounce: number) {
-    let selected: { entry: Portal; exit: Portal; crossing: ReturnType<typeof getCrossingIntersection> } | null = null;
+    const oldPos = { x: this.oldX, y: this.oldY };
+    const proposed = { x: this.x, y: this.y };
+    let selected: PortalEvent | null = null;
+
+    const consider = (candidate: PortalEvent) => {
+      if (
+        !selected
+        || candidate.t < selected.t - EVENT_TIME_EPSILON
+        || (
+          Math.abs(candidate.t - selected.t) <= EVENT_TIME_EPSILON
+          && candidate.kind === 'rim'
+          && selected.kind === 'crossing'
+        )
+      ) {
+        selected = candidate;
+      }
+    };
 
     for (let i = 0; i < portals.length; i++) {
       const entry = portals[i];
-      const crossing = getCrossingIntersection(
-        { x: this.oldX, y: this.oldY },
-        { x: this.x, y: this.y },
-        entry,
-        this.radius,
-      );
-      if (!crossing) continue;
-      if (!selected || crossing.t < selected.crossing!.t) {
-        selected = { entry, exit: portals[(i + 1) % portals.length], crossing };
+      const rimHit = getSweptPortalRimCollision(oldPos, proposed, this.radius, entry);
+      if (rimHit) consider({ kind: 'rim', t: rimHit.t, hit: rimHit });
+
+      const exit = getLinkedPortal(portals, i);
+      if (this.cooldown <= 0 && exit) {
+        const crossing = getCrossingIntersection(oldPos, proposed, entry, this.radius);
+        if (crossing) consider({ kind: 'crossing', t: crossing.t, entry, exit, crossing });
       }
     }
 
-    if (!selected?.crossing || this.cooldown > 0) return;
+    if (!selected) return;
+    if (selected.kind === 'rim') {
+      this.resolveRimImpact(selected.hit, proposed, bounce);
+      return;
+    }
 
     const fromFront = selected.crossing.dotPrev > 0;
     if (twoSided || fromFront) {
@@ -91,6 +116,25 @@ export class Ball {
     this.blockedFaceImpact(selected.entry, selected.crossing.dotPrev, bounce);
   }
 
+  resolveRimImpact(hit: SweptPortalRimCollision, proposed: Point, bounce: number) {
+    const restitution = Math.max(0, bounce);
+    const residualX = proposed.x - hit.center.x;
+    const residualY = proposed.y - hit.center.y;
+    const residualNormal = residualX * hit.normal.x + residualY * hit.normal.y;
+    const responseScale = residualNormal < 0 ? (1 + restitution) * residualNormal : 0;
+
+    this.x = hit.center.x + residualX - responseScale * hit.normal.x + hit.normal.x * PORTAL_COLLISION_EPSILON;
+    this.y = hit.center.y + residualY - responseScale * hit.normal.y + hit.normal.y * PORTAL_COLLISION_EPSILON;
+
+    const velocityNormal = this.vx * hit.normal.x + this.vy * hit.normal.y;
+    if (velocityNormal < 0) {
+      this.vx -= (1 + restitution) * velocityNormal * hit.normal.x;
+      this.vy -= (1 + restitution) * velocityNormal * hit.normal.y;
+    }
+    this.oldX = this.x;
+    this.oldY = this.y;
+  }
+
   constrain(width: number, height: number, portals: Portal[], bounce: number, twoSided: boolean) {
     // 1. Boundaries
     const margin = this.radius;
@@ -101,29 +145,25 @@ export class Ball {
 
     // 2. Portal Statics (Endcaps and Persistent Blocked-Face Support)
     for (const p1 of portals) {
-        const tipDist = p1.width / 2;
-        const tips = [
-          { x: p1.x + p1.dir.x * tipDist, y: p1.y + p1.dir.y * tipDist },
-          { x: p1.x - p1.dir.x * tipDist, y: p1.y - p1.dir.y * tipDist }
-        ];
-
-        for (const tip of tips) {
-          const dx = this.x - tip.x; const dy = this.y - tip.y;
-          const distSq = dx * dx + dy * dy;
-          const minDist = this.radius + 1; 
-          if (distSq < minDist * minDist) {
-            const dist = Math.sqrt(distSq) || 0.1;
-            const nx = dx / dist; const ny = dy / dist;
-            const overlap = minDist - dist;
-            this.x += nx * overlap; this.y += ny * overlap;
-            const dot = this.vx * nx + this.vy * ny;
-            if (dot < 0) {
-              this.vx = (this.vx - 2 * dot * nx) * bounce;
-              this.vy = (this.vy - 2 * dot * ny) * bounce;
-            }
-            this.oldX = this.x;
-            this.oldY = this.y;
+        const rimCollision = getPortalRimCollision({ x: this.x, y: this.y }, this.radius, p1);
+        if (rimCollision) {
+          let { x: nx, y: ny } = rimCollision.normal;
+          const centerDistance = Math.hypot(this.x - rimCollision.closest.x, this.y - rimCollision.closest.y);
+          const speed = Math.hypot(this.vx, this.vy);
+          if (centerDistance <= EVENT_TIME_EPSILON && speed > EVENT_TIME_EPSILON) {
+            nx = -this.vx / speed;
+            ny = -this.vy / speed;
           }
+
+          this.x += nx * (rimCollision.overlap + PORTAL_COLLISION_EPSILON);
+          this.y += ny * (rimCollision.overlap + PORTAL_COLLISION_EPSILON);
+          const velocityNormal = this.vx * nx + this.vy * ny;
+          if (velocityNormal < 0) {
+            this.vx -= (1 + Math.max(0, bounce)) * velocityNormal * nx;
+            this.vy -= (1 + Math.max(0, bounce)) * velocityNormal * ny;
+          }
+          this.oldX = this.x;
+          this.oldY = this.y;
         }
 
         if (!twoSided) {
@@ -209,15 +249,17 @@ export class Ball {
     this.drawTrail(ctx, trailIntensity, heat);
 
     let overlap: { entry: Portal; exit: Portal; d: number } | null = null;
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < portals.length; i++) {
         const p = portals[i];
+        const exit = getLinkedPortal(portals, i);
+        if (!exit) continue;
         const distAlong = (this.x - p.x) * p.dir.x + (this.y - p.y) * p.dir.y;
-        if (Math.abs(distAlong) < p.width/2 + this.radius) {
+        if (isWithinPortalAperture({ along: distAlong }, p, this.radius)) {
             const d = (this.x - p.x) * p.normal.x + (this.y - p.y) * p.normal.y;
             if (Math.abs(d) < this.radius) {
                 // If one-sided, only allow dual rendering if the ball center is on the front face (d > 0)
                 if (twoSided || d >= 0) {
-                  overlap = { entry: p, exit: portals[(i + 1) % 2], d };
+                  overlap = { entry: p, exit, d };
                   break;
                 }
             }
@@ -272,6 +314,7 @@ export class Ball {
     const dLoc = (this.x - entry.x) * entry.dir.x + (this.y - entry.y) * entry.dir.y;
     // Parameter 'nLoc' passed from overlap check is exactly the Normal distance
     const isFront = nLoc >= 0;
+    const visibleClipY = isFront ? 0 : -2000;
     
     // Mapped clone placement exactly identical to teleport basis mapping
     const cloneX = exit.x + dLoc * exit.dir.x - nLoc * exit.normal.x;
@@ -283,7 +326,7 @@ export class Ball {
     ctx.beginPath();
     ctx.translate(entry.x, entry.y);
     ctx.rotate(entry.angle);
-    ctx.rect(-2000, isFront ? 0 : -2000, 4000, 2000); 
+    ctx.rect(-2000, visibleClipY, 4000, 2000);
     ctx.clip();
     ctx.setTransform(worldTransform);
     this.renderBody(ctx, this.x, this.y, heat);
@@ -293,11 +336,12 @@ export class Ball {
     ctx.beginPath();
     ctx.translate(exit.x, exit.y);
     ctx.rotate(exit.angle);
-    ctx.rect(-2000, isFront ? -2000 : 0, 4000, 2000); 
+    // The portal transform flips the clone center's normal coordinate. The
+    // emerged slice is therefore the same signed half as the entry remnant.
+    ctx.rect(-2000, visibleClipY, 4000, 2000);
     ctx.clip();
     ctx.setTransform(worldTransform);
     this.renderBody(ctx, cloneX, cloneY, heat);
     ctx.restore();
   }
 }
-
