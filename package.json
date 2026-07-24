@@ -3,15 +3,23 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "packageManager": "npm@11.6.2",
   "scripts": {
+    "app:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/launch-windows.ps1",
+    "app:install": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install-windows.ps1",
+    "app:uninstall": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/uninstall-windows.ps1",
+    "app:serve": "node scripts/serve-dist.mjs --root dist",
     "dev": "vite --port=3000 --host=0.0.0.0",
     "build": "vite build",
     "preview": "vite preview",
-    "clean": "rm -rf dist",
+    "clean": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true });\"",
     "typecheck": "tsc --noEmit",
     "lint": "npm run typecheck",
-    "test": "node --import tsx --test src/tests/simulation.test.ts",
-    "test:coverage": "node --experimental-test-coverage --test-coverage-lines=90 --test-coverage-functions=80 --test-coverage-branches=75 --import tsx --test src/tests/simulation.test.ts"
+    "test": "tsx --test",
+    "test:coverage": "tsx --experimental-test-coverage --test-coverage-lines=90 --test-coverage-functions=80 --test-coverage-branches=75 --test"
   },
   "dependencies": {
     "lucide-react": "^0.546.0",

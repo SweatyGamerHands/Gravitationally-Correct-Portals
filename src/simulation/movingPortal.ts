@@ -6,6 +6,7 @@ import {
   TRAVERSAL_EPSILON,
 } from './constants';
 import { getPortalApertureEndpoints, getPortalRimCollision } from './collisions';
+import { bodyEventId, bodyEventLabel, bodySpeed, type PhysicsEvent } from './events';
 import { getLinkedPortal, isWithinPortalAperture, type TraversalBody } from './portalTraversal';
 import {
   add,
@@ -14,7 +15,7 @@ import {
   portalLocalToWorldPoint,
   worldPointToPortalLocal,
 } from './portalTransform';
-import { withPortalVectors, type Point, type Portal } from './types';
+import { isPortalTwoSided, withPortalVectors, type Point, type Portal } from './types';
 
 const MOTION_EPSILON = 1e-8;
 const EVENT_TIME_EPSILON = 1e-7;
@@ -24,6 +25,7 @@ export type PortalSweepOptions = {
   duration: number;
   twoSided: boolean;
   bounce: number;
+  onEvent?: (event: PhysicsEvent) => void;
 };
 
 export type PortalSweepResult = {
@@ -86,6 +88,7 @@ export const interpolatePortalPose = (from: Portal, to: Portal, t: number): Port
     angle: from.angle + shortestAngleDelta(from.angle, to.angle) * clampedT,
     color: to.color,
     width: from.width + (to.width - from.width) * clampedT,
+    twoSided: to.twoSided ?? from.twoSided,
   });
 };
 
@@ -341,6 +344,7 @@ const applyTraversal = (body: TraversalBody, event: TraversalEvent, duration: nu
   body.oldY = body.y;
   body.cooldown = TELEPORT_COOLDOWN_SECONDS;
   if (body.trail) body.trail.length = 0;
+  if (body.trailSampleElapsed !== undefined) body.trailSampleElapsed = 0;
 };
 
 const applyBlockedFace = (body: TraversalBody, event: BlockedEvent, duration: number, bounce: number) => {
@@ -394,6 +398,88 @@ const applyRimImpact = (body: TraversalBody, event: RimEvent, bounce: number) =>
   body.oldY = body.y;
 };
 
+const getMotionEventPosition = (body: TraversalBody, event: PortalMotionEvent): Point => {
+  if (event.kind === 'traversal') {
+    return portalLocalToWorldPoint({ along: event.along, normal: 0 }, event.pose);
+  }
+  if (event.kind === 'blocked') {
+    return portalLocalToWorldPoint({
+      along: event.along,
+      normal: -(body.radius + PORTAL_BACK_PLATE_HALF_THICKNESS),
+    }, event.pose);
+  }
+  return { x: body.x, y: body.y };
+};
+
+const makeMotionPhysicsEvent = (
+  body: TraversalBody,
+  event: PortalMotionEvent,
+  position: Point,
+  beforeSpeed: number,
+  bounce: number,
+): PhysicsEvent => {
+  const afterSpeed = bodySpeed(body);
+  const commonFacts = {
+    movingPortal: true,
+    speedChange: afterSpeed - beforeSpeed,
+  };
+
+  if (event.kind === 'traversal') {
+    return {
+      type: 'traversal',
+      bodyId: bodyEventId(body),
+      portalIds: { entry: event.entryFrom.id, exit: event.exitFrom.id },
+      position,
+      beforeSpeed,
+      afterSpeed,
+      explanation: {
+        message: `${bodyEventLabel(body)} was swept through ${event.entryFrom.id} and emerged from ${event.exitFrom.id}.`,
+        facts: {
+          ...commonFacts,
+          fromFront: event.fromFront,
+        },
+      },
+    };
+  }
+
+  if (event.kind === 'blocked') {
+    return {
+      type: 'back-plate-impact',
+      bodyId: bodyEventId(body),
+      portalIds: { entry: event.entryFrom.id },
+      position,
+      beforeSpeed,
+      afterSpeed,
+      explanation: {
+        message: `${bodyEventLabel(body)} was struck by the solid rear plate of ${event.entryFrom.id}.`,
+        facts: {
+          ...commonFacts,
+          restitution: Math.max(0, bounce),
+        },
+      },
+    };
+  }
+
+  return {
+    type: 'rim-impact',
+    bodyId: bodyEventId(body),
+    portalIds: { entry: event.portalTo.id },
+    position,
+    beforeSpeed,
+    afterSpeed,
+    explanation: {
+      message: `${bodyEventLabel(body)} was struck by the moving rim of ${event.portalTo.id}.`,
+      facts: {
+        ...commonFacts,
+        restitution: Math.max(0, bounce),
+        normalX: event.normal.x,
+        normalY: event.normal.y,
+        surfaceSpeed: Math.hypot(event.surfaceVelocity.x, event.surfaceVelocity.y),
+      },
+    },
+  };
+};
+
 export const resolveMovingPortalSweeps = (
   bodies: TraversalBody[],
   fromPortals: readonly Portal[],
@@ -414,7 +500,8 @@ export const resolveMovingPortalSweeps = (
       if (!entryTo || entryTo.id !== entryFrom.id || !portalMoved(entryFrom, entryTo)) continue;
 
       selected = selectEarlierEvent(selected, getMovingPortalRimEvent(body, entryFrom, entryTo, duration));
-      if (!options.twoSided) {
+      const entryIsTwoSided = isPortalTwoSided(entryTo, options.twoSided);
+      if (!entryIsTwoSided) {
         const blockedContact = getMovingPortalBackFaceContact(body, entryFrom, entryTo);
         if (blockedContact) {
           selected = selectEarlierEvent(selected, {
@@ -428,7 +515,7 @@ export const resolveMovingPortalSweeps = (
       const crossing = getMovingPortalPlaneCrossing(body, entryFrom, entryTo);
       if (!crossing) continue;
 
-      if (!options.twoSided && !crossing.fromFront) {
+      if (!entryIsTwoSided && !crossing.fromFront) {
         continue;
       }
 
@@ -447,6 +534,8 @@ export const resolveMovingPortalSweeps = (
     }
 
     if (!selected) continue;
+    const eventPosition = getMotionEventPosition(body, selected);
+    const beforeSpeed = bodySpeed(body);
     if (selected.kind === 'traversal') {
       applyTraversal(body, selected, duration);
       result.teleported++;
@@ -457,6 +546,13 @@ export const resolveMovingPortalSweeps = (
       applyRimImpact(body, selected, options.bounce);
       result.rimImpacts++;
     }
+    options.onEvent?.(makeMotionPhysicsEvent(
+      body,
+      selected,
+      eventPosition,
+      beforeSpeed,
+      options.bounce,
+    ));
   }
 
   return result;

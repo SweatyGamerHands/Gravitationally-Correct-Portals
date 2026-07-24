@@ -96,6 +96,28 @@ Velocity transfer is evaluated in the instantaneous portal frames. The entry mou
 
 Moving a mouth also makes the scalar potential explicitly time-dependent. Energy gained while the field changes belongs to the external actuator that moved the kinematic portal; it is not passive-loop energy.
 
+Programmed mouths are evaluated from absolute simulation time rather than accumulated render deltas. Linear and oscillating paths use a phase-relative sine displacement; circular paths use a phase-relative cosine/sine offset. Editing a live motion program rebases its origin at the current pose, preventing a discontinuous jump on the next fixed step.
+
+## Energy observables
+
+For every body, the laboratory samples
+
+```text
+K = 1/2 * m * |v|^2
+U = m * phi(x, y)
+E = K + U
+```
+
+Displayed drift is `100 * (E - E_baseline) / |E_baseline|` when the baseline is nonzero. A near-zero baseline is reported as unavailable unless the absolute change is also numerically zero.
+
+The moving-contact ledger is narrower: it accumulates body kinetic-energy changes emitted by moving-mouth contact events. It can include restitution loss and does not attempt to separate all actuator work, potential-field work, and dissipative loss. The UI labels it `Moving-contact ΔK` to avoid claiming a stronger conservation result than the solver computes.
+
+## Replay and experiment state
+
+The simulation timeline samples versioned experiment documents at 30 Hz and keeps the most recent 900 frames. Scrubbing restores explicit position, previous position, velocity, portal pose, motion program, configuration, seed, and simulation time. Resuming or single-stepping after a scrub truncates the abandoned future and creates a new causal branch.
+
+Undo/redo is separate from replay: it records intentional experiment edits with semantic document equality, while the timeline records physical evolution. Saved and shared documents include their source CSS-pixel world dimensions; opening one in a different viewport uniformly fits and centers spatial state without distorting circles or portal angles.
+
 ## Visualization strategy
 
 Field arrows, heatmap, streamlines, grid distortion, trajectory-related calculations, and body acceleration all sample `computeGravityAt`. The grid is presented as a field-distortion visualization, not a literal spacetime metric. Streamlines are seeded near portal mouths and integrated with RK4 through the same vector field.
@@ -113,5 +135,8 @@ New bodies are placed into the first collision-free launch slot instead of shari
 - Overlapping mouths and networks with several simultaneous pairs use a smooth shared-seam approximation rather than a full global Poisson solve.
 - Acceleration uses a centered finite-difference derivative of the scalar potential.
 - Multiple dynamic rigid bodies use circle approximations rather than full rigid-body rotation.
-- Portal motion is sampled at pointer updates, follows the shortest angular path between samples, and resolves the earliest event per body per sample.
+- Pointer-driven portal motion is sampled at pointer updates and follows the shortest angular path between samples; programmed paths are sampled on fixed physics steps from absolute simulation time.
 - Body motion and mouth motion use separate swept update streams rather than one globally coupled time-of-impact solve.
+- The moving-contact ledger is not a complete external-work or entropy decomposition.
+- Replay stores bounded sampled frames rather than a lossless record of every internal substep.
+- Responsive world fitting preserves shape with uniform scaling and may introduce empty margins when aspect ratios differ.

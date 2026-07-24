@@ -4,6 +4,8 @@ export * from './fieldSolver';
 export * from './integrator';
 export * from './editor';
 export * from './movingPortal';
+export * from './portalMotion';
 export * from './portalTraversal';
 export * from './collisions';
+export * from './events';
 export { worldPointToPortalLocal as getPortalLocal, mapVectorThroughPortal as transformThroughPortal } from './portalTransform';

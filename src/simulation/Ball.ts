@@ -1,17 +1,31 @@
 import { PORTAL_BACK_PLATE_HALF_THICKNESS, PORTAL_COLLISION_EPSILON, TELEPORT_COOLDOWN_SECONDS } from './constants';
 import { getPortalRimCollision, getSweptPortalRimCollision, type SweptPortalRimCollision } from './collisions';
+import { bodyEventId, bodyEventLabel, bodySpeed, type PhysicsEvent } from './events';
 import { getCrossingIntersection, getLinkedPortal, isWithinPortalAperture, teleportBodyAtCrossing } from './portalTraversal';
-import type { Point, Portal } from './types';
+import { isPortalTwoSided, type Point, type Portal } from './types';
 
 const MAX_TRAIL = 80;
+const TRAIL_SAMPLE_INTERVAL = 1 / 60;
 const EVENT_TIME_EPSILON = 1e-9;
+let nextBallOrdinal = 1;
+
+const deterministicBallColor = (id: string) => {
+  let hash = 2166136261;
+  for (let index = 0; index < id.length; index++) {
+    hash ^= id.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `hsl(${190 + (hash >>> 0) % 61}, 90%, 65%)`;
+};
 
 type PortalCrossing = NonNullable<ReturnType<typeof getCrossingIntersection>>;
 type PortalEvent =
   | { kind: 'crossing'; t: number; entry: Portal; exit: Portal; crossing: PortalCrossing }
-  | { kind: 'rim'; t: number; hit: SweptPortalRimCollision };
+  | { kind: 'rim'; t: number; portal: Portal; hit: SweptPortalRimCollision };
 
 export class Ball {
+  id: string;
+  label: string;
   x: number;
   y: number;
   oldX: number;
@@ -23,8 +37,17 @@ export class Ball {
   vy: number;
   color: string;
   trail: Point[];
+  trailSampleElapsed: number;
 
-  constructor(x: number, y: number, r: number, m: number) {
+  constructor(x: number, y: number, r: number, m: number, id?: string, label?: string) {
+    if (id) {
+      this.id = id;
+      this.label = label ?? id;
+    } else {
+      const ordinal = nextBallOrdinal++;
+      this.id = `ball-${ordinal}`;
+      this.label = label ?? `Ball ${ordinal}`;
+    }
     this.x = x;
     this.y = y;
     this.oldX = x;
@@ -34,8 +57,9 @@ export class Ball {
     this.cooldown = 0;
     this.vx = 0;
     this.vy = 0;
-    this.color = `hsl(${Math.random() * 60 + 190}, 90%, 65%)`;
+    this.color = deterministicBallColor(this.id);
     this.trail = [];
+    this.trailSampleElapsed = 0;
   }
 
   update(
@@ -57,13 +81,30 @@ export class Ball {
 
     if (this.cooldown > 0) this.cooldown = Math.max(0, this.cooldown - dt);
     
-    if (Math.random() > 0.8) {
-      this.trail.push({ x: this.x, y: this.y });
-      if (this.trail.length > MAX_TRAIL) this.trail.shift();
-    }
+    this.sampleTrail(this.oldX, this.oldY, dt);
   }
 
-  checkCrossing(portals: Portal[], twoSided: boolean, bounce: number) {
+  sampleTrail(previousX: number, previousY: number, dt: number) {
+    if (!(dt > 0)) return;
+    const elapsed = this.trailSampleElapsed + dt;
+    const sampleCount = Math.floor((elapsed + EVENT_TIME_EPSILON) / TRAIL_SAMPLE_INTERVAL);
+    const firstOffset = TRAIL_SAMPLE_INTERVAL - this.trailSampleElapsed;
+
+    for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++) {
+      const offset = firstOffset + sampleIndex * TRAIL_SAMPLE_INTERVAL;
+      const t = Math.max(0, Math.min(1, offset / dt));
+      this.trail.push({
+        x: previousX + (this.x - previousX) * t,
+        y: previousY + (this.y - previousY) * t,
+      });
+      if (this.trail.length > MAX_TRAIL) this.trail.shift();
+    }
+
+    this.trailSampleElapsed = elapsed - sampleCount * TRAIL_SAMPLE_INTERVAL;
+    if (Math.abs(this.trailSampleElapsed) <= EVENT_TIME_EPSILON) this.trailSampleElapsed = 0;
+  }
+
+  checkCrossing(portals: Portal[], twoSided: boolean, bounce: number): PhysicsEvent | null {
     const oldPos = { x: this.oldX, y: this.oldY };
     const proposed = { x: this.x, y: this.y };
     let selected: PortalEvent | null = null;
@@ -85,7 +126,7 @@ export class Ball {
     for (let i = 0; i < portals.length; i++) {
       const entry = portals[i];
       const rimHit = getSweptPortalRimCollision(oldPos, proposed, this.radius, entry);
-      if (rimHit) consider({ kind: 'rim', t: rimHit.t, hit: rimHit });
+      if (rimHit) consider({ kind: 'rim', t: rimHit.t, portal: entry, hit: rimHit });
 
       const exit = getLinkedPortal(portals, i);
       if (this.cooldown <= 0 && exit) {
@@ -94,26 +135,81 @@ export class Ball {
       }
     }
 
-    if (!selected) return;
+    if (!selected) return null;
     if (selected.kind === 'rim') {
+      const beforeSpeed = bodySpeed(this);
       this.resolveRimImpact(selected.hit, proposed, bounce);
-      return;
+      const afterSpeed = bodySpeed(this);
+      return {
+        type: 'rim-impact',
+        bodyId: bodyEventId(this),
+        portalIds: { entry: selected.portal.id },
+        position: { ...selected.hit.center },
+        beforeSpeed,
+        afterSpeed,
+        explanation: {
+          message: `${bodyEventLabel(this)} struck the solid rim of ${selected.portal.id}.`,
+          facts: {
+            restitution: Math.max(0, bounce),
+            normalX: selected.hit.normal.x,
+            normalY: selected.hit.normal.y,
+            speedChange: afterSpeed - beforeSpeed,
+          },
+        },
+      };
     }
 
     const fromFront = selected.crossing.dotPrev > 0;
-    if (twoSided || fromFront) {
+    const entryIsTwoSided = isPortalTwoSided(selected.entry, twoSided);
+    const beforeSpeed = bodySpeed(this);
+    const crossingPosition = { x: selected.crossing.interX, y: selected.crossing.interY };
+    if (entryIsTwoSided || fromFront) {
       teleportBodyAtCrossing(
         this,
         selected.entry,
         selected.exit,
-        { x: selected.crossing.interX, y: selected.crossing.interY },
+        crossingPosition,
         { x: this.x, y: this.y },
       );
       this.cooldown = TELEPORT_COOLDOWN_SECONDS;
-      return;
+      this.trailSampleElapsed = 0;
+      const afterSpeed = bodySpeed(this);
+      return {
+        type: 'traversal',
+        bodyId: bodyEventId(this),
+        portalIds: { entry: selected.entry.id, exit: selected.exit.id },
+        position: crossingPosition,
+        beforeSpeed,
+        afterSpeed,
+        explanation: {
+          message: `${bodyEventLabel(this)} crossed ${selected.entry.id} and emerged from ${selected.exit.id}.`,
+          facts: {
+            fromFront,
+            matterMode: entryIsTwoSided ? 'two-sided' : 'one-sided',
+            speedChange: afterSpeed - beforeSpeed,
+          },
+        },
+      };
     }
 
     this.blockedFaceImpact(selected.entry, selected.crossing.dotPrev, bounce);
+    const afterSpeed = bodySpeed(this);
+    return {
+      type: 'back-plate-impact',
+      bodyId: bodyEventId(this),
+      portalIds: { entry: selected.entry.id },
+      position: crossingPosition,
+      beforeSpeed,
+      afterSpeed,
+      explanation: {
+        message: `${bodyEventLabel(this)} hit the solid rear plate of ${selected.entry.id}.`,
+        facts: {
+          restitution: Math.max(0, bounce),
+          fromFront,
+          speedChange: afterSpeed - beforeSpeed,
+        },
+      },
+    };
   }
 
   resolveRimImpact(hit: SweptPortalRimCollision, proposed: Point, bounce: number) {
@@ -166,7 +262,7 @@ export class Ball {
           this.oldY = this.y;
         }
 
-        if (!twoSided) {
+        if (!isPortalTwoSided(p1, twoSided)) {
           const dx = this.x - p1.x; const dy = this.y - p1.y;
           const distNormal = dx * p1.normal.x + dy * p1.normal.y;
           // Persistent Support: If ball is on back side and within support threshold
@@ -258,7 +354,7 @@ export class Ball {
             const d = (this.x - p.x) * p.normal.x + (this.y - p.y) * p.normal.y;
             if (Math.abs(d) < this.radius) {
                 // If one-sided, only allow dual rendering if the ball center is on the front face (d > 0)
-                if (twoSided || d >= 0) {
+                if (isPortalTwoSided(p, twoSided) || d >= 0) {
                   overlap = { entry: p, exit, d };
                   break;
                 }
