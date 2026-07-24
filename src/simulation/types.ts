@@ -7,6 +7,8 @@ export type Portal = {
   angle: number;
   color: string;
   width: number;
+  /** Overrides the experiment-wide matter traversal mode for this mouth. */
+  twoSided?: boolean;
   dir: Point;
   normal: Point;
   handle: Point;
@@ -17,3 +19,7 @@ export const withPortalVectors = (p: Omit<Portal, 'dir' | 'normal' | 'handle'>):
   const normal = { x: -Math.sin(p.angle), y: Math.cos(p.angle) };
   return { ...p, dir, normal, handle: { x: p.x + normal.x * 60, y: p.y + normal.y * 60 } };
 };
+
+export const isPortalTwoSided = (portal: Pick<Portal, 'twoSided'>, fallback: boolean) => (
+  portal.twoSided ?? fallback
+);

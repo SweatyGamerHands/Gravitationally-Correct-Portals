@@ -27,7 +27,20 @@ export const getCrossingIntersection = (oldPos: Point, newPos: Point, portal: Po
   return { t, interX, interY, dotPrev: prevLocal.normal, local };
 };
 
-export type TraversalBody = { x: number; y: number; oldX: number; oldY: number; vx: number; vy: number; radius: number; trail?: Point[]; cooldown?: number };
+export type TraversalBody = {
+  id?: string;
+  label?: string;
+  x: number;
+  y: number;
+  oldX: number;
+  oldY: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  trail?: Point[];
+  trailSampleElapsed?: number;
+  cooldown?: number;
+};
 export const teleportBodyAtCrossing = (body: TraversalBody, entry: Portal, exit: Portal, crossing: Point, proposed: Point) => {
   const mappedCrossing = mapPointThroughPortal(crossing, entry, exit);
   const residual = { x: proposed.x - crossing.x, y: proposed.y - crossing.y };
@@ -39,4 +52,5 @@ export const teleportBodyAtCrossing = (body: TraversalBody, entry: Portal, exit:
   body.vx = mappedVelocity.x; body.vy = mappedVelocity.y;
   body.oldX = body.x; body.oldY = body.y;
   if (body.trail) body.trail = [];
+  if (body.trailSampleElapsed !== undefined) body.trailSampleElapsed = 0;
 };

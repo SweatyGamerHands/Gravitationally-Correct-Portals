@@ -1,6 +1,12 @@
 {
-  "name": "Spacetime Portal Sandbox",
-  "description": "A robust physical simulation exploring gravitationally correct portals, spacetime curvature visualization, and momentum conservation in a vacuum.",
+  "name": "Portal Field Laboratory",
+  "description": "A rewindable experimental laboratory for conservative Newtonian portal traversal, reciprocal gravity coupling, moving aperture frames, and reproducible analysis.",
   "requestFramePermissions": [],
-  "majorCapabilities": []
+  "majorCapabilities": [
+    "timeline-replay",
+    "experiment-snapshots",
+    "shareable-seeded-setups",
+    "portal-motion-programs",
+    "event-and-energy-analysis"
+  ]
 }
